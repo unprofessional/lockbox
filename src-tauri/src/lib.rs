@@ -1,3 +1,4 @@
+mod clipboard;
 mod otp;
 mod settings;
 mod update;
@@ -23,6 +24,8 @@ struct AppState {
     /// A parsed account waiting for the user to confirm its preview. Holds a
     /// seed, so it's cleared on lock.
     pending: Mutex<Option<Pending>>,
+    /// Our latest clipboard write, so locking can clear it if it's still there.
+    last_copy: Mutex<Option<clipboard::Stamp>>,
     /// Bundled update-helper.sh; the only thing the app may run.
     update_helper: PathBuf,
     /// One update check or install at a time.
@@ -96,10 +99,14 @@ async fn unlock(state: State<'_, AppState>, password: String) -> Result<bool, St
     }
 }
 
+/// Also clears a copied code still on the clipboard.
 #[tauri::command]
 fn lock(state: State<'_, AppState>) {
     state.pending.lock().unwrap().take();
     state.vault.lock().unwrap().take();
+    if let Some(stamp) = state.last_copy.lock().unwrap().take() {
+        clipboard::clear_if_unchanged(stamp);
+    }
 }
 
 /// `Ok(false)` if `old` is wrong.
@@ -159,6 +166,32 @@ fn get_codes(state: State<'_, AppState>) -> Result<Vec<CodeOut>, String> {
 #[tauri::command]
 async fn hotp_next(state: State<'_, AppState>, id: String) -> Result<String, String> {
     with_vault(&state, |v| v.next_hotp(&id))
+}
+
+#[derive(Serialize)]
+struct Copied {
+    code: String,
+    wipe_seconds: u32,
+}
+
+/// Copies the account's current code (TOTP) or next code (HOTP; advances
+/// the counter) to the clipboard, marked private, and schedules the wipe.
+/// The webview has no clipboard access of its own.
+#[tauri::command]
+async fn copy_code(state: State<'_, AppState>, id: String) -> Result<Copied, String> {
+    let t = now();
+    let code = with_vault(&state, |v| {
+        let e = v.entries().iter().find(|e| e.id == id).ok_or(VaultError::NoSuchEntry)?;
+        if e.kind == otp::Kind::Totp {
+            return e.totp_code(t).map_err(VaultError::Invalid);
+        }
+        v.next_hotp(&id)
+    })?;
+    let wipe_seconds = state.settings.lock().unwrap().clipboard_wipe_seconds;
+    let stamp = clipboard::copy(&code);
+    *state.last_copy.lock().unwrap() = Some(stamp);
+    clipboard::schedule_wipe(stamp, std::time::Duration::from_secs(wipe_seconds.into()));
+    Ok(Copied { code, wipe_seconds })
 }
 
 /// What the user confirms before an account is saved. No seed.
@@ -337,6 +370,7 @@ fn app_state(dir: PathBuf, update_helper: PathBuf) -> AppState {
         vault_path: dir.join("vault.enc"),
         vault: Mutex::new(None),
         pending: Mutex::new(None),
+        last_copy: Mutex::new(None),
         update_helper,
         update_busy: AtomicBool::new(false),
     }
@@ -366,6 +400,7 @@ pub fn run() {
             list_entries,
             get_codes,
             hotp_next,
+            copy_code,
             entry_preview_uri,
             entry_preview_manual,
             entry_confirm,
@@ -405,6 +440,7 @@ mod contract_tests {
         "list_entries",
         "get_codes",
         "hotp_next",
+        "copy_code",
         "entry_preview_uri",
         "entry_preview_manual",
         "entry_confirm",
@@ -472,6 +508,7 @@ mod contract_tests {
         locked("list_entries", list_entries(s()));
         locked("get_codes", get_codes(s()));
         locked("hotp_next", block_on(hotp_next(s(), "x".into())));
+        locked("copy_code", block_on(copy_code(s(), "x".into())));
         locked("entry_preview_uri", entry_preview_uri(s(), URI.into()));
         locked("entry_preview_manual", entry_preview_manual(s(), form()));
         locked("entry_confirm", block_on(entry_confirm(s(), "t".into(), false)));
@@ -483,7 +520,7 @@ mod contract_tests {
         locked("settings_set", settings_set(s(), Settings::default()));
         locked("update_check", block_on(update_check(s())));
         locked("update_install", block_on(update_install(s(), pw())));
-        assert_eq!(GUARDED.len(), 12, "exercise every GUARDED command above");
+        assert_eq!(GUARDED.len(), 13, "exercise every GUARDED command above");
     }
 
     #[test]

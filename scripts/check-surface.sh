@@ -6,12 +6,12 @@ set -eu
 fail=0
 bad() { echo "FAIL: $*"; fail=1; }
 
-# 1. Tauri plugins: only the clipboard plugin is ever allowed (from M4).
-if grep -E '^tauri-plugin-' src-tauri/Cargo.toml | grep -v '^tauri-plugin-clipboard-manager' ; then
-  bad "unexpected tauri plugin in src-tauri/Cargo.toml"
+# 1. No Tauri plugins at all (the clipboard is handled in src/clipboard.rs).
+if grep -E '^tauri-plugin-' src-tauri/Cargo.toml ; then
+  bad "tauri plugin in src-tauri/Cargo.toml"
 fi
-if grep -E '"@tauri-apps/plugin-' package.json | grep -v 'plugin-clipboard-manager' ; then
-  bad "unexpected tauri plugin in package.json"
+if grep -E '"@tauri-apps/plugin-' package.json ; then
+  bad "tauri plugin in package.json"
 fi
 
 # 2. No devtools feature on tauri (devtools stay debug-only).
@@ -28,7 +28,7 @@ for crate in reqwest hyper ureq isahc curl tungstenite tokio-tungstenite websock
 done
 
 # 4. Capabilities grant only app commands (allow-*), no core/fs/http/shell.
-if grep -hoE '"[a-z0-9-]+:[a-z0-9:-]+"' src-tauri/capabilities/*.json | grep -v '"clipboard-manager:' ; then
+if grep -hoE '"[a-z0-9-]+:[a-z0-9:-]+"' src-tauri/capabilities/*.json ; then
   bad "plugin/core permission granted in capabilities"
 fi
 

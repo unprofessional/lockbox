@@ -12,20 +12,22 @@ The full plan, scope and milestones are in [BRIEF.md](BRIEF.md).
 | --- | --- | --- |
 | M1 | Skeleton: locked-down Tauri shell, settings store, lock screen | done |
 | M2 | Vault core: Argon2id + AES-256-GCM, create/unlock/lock/change password | done |
-| M3 | Codes: add entries (manual, `otpauth://` paste), TOTP/HOTP generation | in review |
-| M4 | UI parity: tile grid, copy with clipboard wipe | next |
-| M5 | QR image import, encrypted export/import | |
-| M6 | Hardening: auto-lock, panic hotkey, screen-capture exclusion | |
+| M3 | Codes: add entries (manual, `otpauth://` paste), TOTP/HOTP generation | done |
+| M4 | UI parity: tile grid, copy with clipboard wipe, settings | in review |
+| M5 | QR image import, encrypted export/import | next |
+| M6 | Hardening: lock on sleep/hide, unlock backoff, panic hotkey, screen-capture exclusion | |
 
-Right now you can create a vault, add accounts by pasting an `otpauth://` link or typing the secret, see live codes (time-based and counter-based), search, and edit or delete accounts. To copy a code, select it and press ⌘C; one-click copy with a clipboard wipe arrives in M4.
+Right now you can create a vault and add accounts, either by pasting an `otpauth://` link or by typing the secret. Accounts show as a tile grid with live codes, for both time-based and counter-based accounts. Click a tile to copy its code. You can search, and edit or delete accounts. Settings cover the theme, lock after inactivity, how long copied codes stay on the clipboard, changing the master password, and checking for updates.
+
+Shortcuts: ⌘N add, ⌘F search, ⌘, settings, ⌘L lock.
 
 ## Threat model
 
 **Protects against:**
 
 - A stolen laptop or lost disk: the vault is encrypted at rest.
-- Shoulder-surfing: auto-lock (M6), and codes are hidden until you unlock.
-- Clipboard sniffers: copied codes are wiped after a timeout (M4).
+- Shoulder-surfing: codes are hidden until you unlock, and lockbox locks itself after a set time without activity. Locking on sleep and when the window is hidden comes in M6.
+- Clipboard snooping: copied codes are wiped after a timeout, kept out of clipboard-manager history, and never synced to other devices through Universal Clipboard.
 - A compromised webview: no secret crosses IPC; the webview only gets codes for the current 30-second window.
 - Leaked backups: exports are encrypted by default (M5).
 - Accidental network exfiltration: there is no networking code to exfiltrate with (see [Security surface](#security-surface)).
@@ -98,7 +100,7 @@ Options:
 
 ### Updating from inside the app
 
-When the vault is unlocked, **Check for updates** compares the installed build with `master` on GitHub and lists any new commits. **Update now** asks for your master password again, then builds `master` and installs it with the same checks as `npm run release`, and lockbox restarts. If the build or any check fails, nothing is installed and the error appears in the app. The full log is in `~/Library/Logs/lockbox/update.log`.
+In **Settings → About** (⌘,), **Check for updates** compares the installed build with `master` on GitHub and lists any new commits. **Update now** asks for your master password again, then builds `master` and installs it with the same checks as `npm run release`, and lockbox restarts. If the build or any check fails, nothing is installed and the error appears in the app. The full log is in `~/Library/Logs/lockbox/update.log`.
 
 The app itself still has no network code. Both buttons run a single helper script bundled inside the app ([update-helper.sh](src-tauri/resources/update-helper.sh)), with fixed modes the webview can't change. git does the fetching. The helper builds in its own copy of the repo at `~/Library/Caches/lockbox/release` (a git worktree), so it never disturbs whatever branch you have checked out. The first update takes a few minutes; later ones reuse the build cache.
 
@@ -157,6 +159,15 @@ On unlock, lockbox refuses unknown versions and algorithms. It bounds-checks the
 
 Saves are atomic: write `vault.enc.tmp`, fsync, rename over `vault.enc`, fsync the directory. The previous file becomes `vault.enc.bak` first.
 
+### Copying codes
+
+Clicking a tile asks Rust to copy its code (`copy_code`). Counter-based (HOTP) tiles get their next code. The webview never touches the clipboard and has no permission to.
+
+- **Kept out of clipboard history:** Rust writes the code straight to the macOS clipboard ([clipboard.rs](src-tauri/src/clipboard.rs)) and tags it with the `org.nspasteboard.ConcealedType` and `TransientType` markers. Clipboard managers such as Raycast, Alfred, Paste and Maccy respect these and don't save the code.
+- **Kept on this Mac:** copies are marked current-host-only, so Universal Clipboard (Handoff) doesn't send them to your iPhone or iPad, where lockbox's wipe couldn't reach them.
+- **Wiped afterwards:** after the delay set in Settings (30 seconds by default), lockbox clears the code, but only if nothing else has been copied since. Locking the vault also clears a code that's still on the clipboard.
+- **Auto-lock:** after the configured minutes with no mouse or keyboard activity, lockbox locks itself. Locking on sleep and when the window is hidden comes in M6.
+
 ### IPC surface
 
 These are the only commands the webview can call. Each one is declared in [build.rs](src-tauri/build.rs) and granted in [capabilities/default.json](src-tauri/capabilities/default.json); the app has no other permissions.
@@ -174,6 +185,7 @@ These are the only commands the webview can call. Each one is declared in [build
 | `list_entries` | no (metadata only, never seeds) |
 | `get_codes` | no |
 | `hotp_next(id)` | no |
+| `copy_code(id)` | no |
 | `entry_preview_uri(uri)`, `entry_preview_manual(form)` | no |
 | `entry_confirm(token, replace)` | no |
 | `edit_entry(id, issuer, account, tags)` | no |
@@ -190,7 +202,7 @@ The IPC contract tests in [lib.rs](src-tauri/src/lib.rs) check that every comman
 
 Keeping the app's attack surface small is the whole point, so these rules are checked automatically by [scripts/check-surface.sh](scripts/check-surface.sh), which runs in CI:
 
-- **No Tauri plugins,** except the clipboard plugin (planned for M4). Never `http`, `fs` or `shell`.
+- **No Tauri plugins at all.** The clipboard is written directly (see [Copying codes](#copying-codes)). Never `http`, `fs` or `shell`.
 - **No networking crates** anywhere in the dependency tree (`reqwest`, `hyper`, `ureq`, websocket crates and so on).
 - **No core or plugin permissions** in the capabilities file; only this app's own commands.
 - **Process spawning only in `src/update.rs`,** which runs nothing but the bundled update helper.

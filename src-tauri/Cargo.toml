@@ -26,6 +26,13 @@ base64 = "0.23"
 zeroize = { version = "1.9", features = ["derive"] }
 totp-rs = { version = "6", default-features = false, features = ["std", "zeroize"] }
 
+# Clipboard (BRIEF §4): NSPasteboard directly, already in Tauri's dependency
+# tree, instead of tauri-plugin-clipboard-manager. See src/clipboard.rs.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray"] }
+
 [dev-dependencies]
 tempfile = "3"
 # Mock runtime for the IPC contract tests in lib.rs.

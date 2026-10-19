@@ -1,14 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { setupAccounts, startAccounts, stopAccounts } from "./accounts";
+import { getSettings, loadSettings, openSettings, setupSettings } from "./settings";
 import { $, errorText, shake } from "./ui";
-
-type Theme = "system" | "light" | "dark";
-
-interface Settings {
-  auto_lock_minutes: number;
-  clipboard_wipe_seconds: number;
-  theme: Theme;
-}
 
 const MIN_PASSWORD_CHARS = 8; // mirrors vault::MIN_PASSWORD_CHARS
 
@@ -33,14 +26,6 @@ function show(name: keyof typeof screens) {
     stopAccounts();
   }
   $<HTMLElement>(focus[name]).focus();
-}
-
-function applyTheme(theme: Theme) {
-  if (theme === "system") {
-    delete document.documentElement.dataset.theme;
-  } else {
-    document.documentElement.dataset.theme = theme;
-  }
 }
 
 /** Rough strength score 0–4. Guidance only; Rust enforces the minimum. */
@@ -166,12 +151,40 @@ function showUpdateError(text: string) {
   pre.hidden = false;
 }
 
+async function lockNow() {
+  await invoke("lock");
+  resetUpdate();
+  $<HTMLElement>("#unlock-msg").textContent = "";
+  show("unlock");
+}
+
+/** Locks after the configured minutes without keyboard or mouse activity. */
+function setupIdleLock() {
+  let last = Date.now();
+  const touch = () => (last = Date.now());
+  for (const ev of ["mousemove", "mousedown", "keydown", "wheel"]) {
+    window.addEventListener(ev, touch, { passive: true, capture: true });
+  }
+  window.setInterval(() => {
+    if (screens.vault.hidden) {
+      last = Date.now();
+      return;
+    }
+    if (Date.now() - last >= getSettings().auto_lock_minutes * 60_000) void lockNow();
+  }, 5_000);
+}
+
 function setupVault() {
-  $<HTMLButtonElement>("#lock-btn").addEventListener("click", async () => {
-    await invoke("lock");
-    resetUpdate();
-    $<HTMLElement>("#unlock-msg").textContent = "";
-    show("unlock");
+  $<HTMLButtonElement>("#lock-btn").addEventListener("click", lockNow);
+  document.addEventListener("keydown", (e) => {
+    if (screens.vault.hidden || !e.metaKey) return;
+    if (e.key === "l") {
+      e.preventDefault();
+      void lockNow();
+    } else if (e.key === ",") {
+      e.preventDefault();
+      openSettings();
+    }
   });
 
   const checkBtn = $<HTMLButtonElement>("#update-check");
@@ -258,13 +271,10 @@ window.addEventListener("DOMContentLoaded", async () => {
   setupUnlock();
   setupVault();
   setupAccounts();
+  setupSettings();
+  setupIdleLock();
   void showBuildInfo();
-
-  try {
-    applyTheme((await invoke<Settings>("settings_get")).theme);
-  } catch {
-    // Defaults (follow system) are fine if settings can't be read.
-  }
+  await loadSettings();
 
   if (!(await invoke<boolean>("vault_exists"))) {
     show("create");
