@@ -60,39 +60,27 @@
         <p id="unlock-msg" class="msg" role="status" aria-live="polite"></p>
       </form>
 
-      <!-- Unlocked: accounts and codes (M3; tile grid polish in M4) -->
+      <!-- Unlocked: tile grid of accounts (BRIEF §10) -->
       <section id="vault-view" class="vault" hidden>
         <header class="topbar">
           <label class="visually-hidden" for="search">Search accounts</label>
           <input id="search" type="search" placeholder="Search" spellcheck="false" />
-          <button type="button" id="add-btn" title="Add an account">+ Add</button>
-          <button type="button" id="lock-btn" class="secondary" title="Lock the vault">Lock</button>
+          <button type="button" id="add-btn" title="Add an account (⌘N)">+ Add</button>
+          <button type="button" id="settings-btn" class="secondary icon-btn" title="Settings (⌘,)" aria-label="Settings">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
+          <button type="button" id="lock-btn" class="secondary" title="Lock (⌘L)">Lock</button>
         </header>
 
         <p id="empty" class="empty" hidden>No accounts yet. Use <strong>+ Add</strong> to add your first one.</p>
         <p id="no-matches" class="empty" hidden>No accounts match your search.</p>
-        <ul id="entries" class="entries"></ul>
-
-        <footer class="update">
-          <p class="build" id="build-info"></p>
-          <button type="button" id="update-check" class="link">Check for updates</button>
-          <p id="update-msg" class="msg" role="status" aria-live="polite"></p>
-          <pre id="update-error" class="update-error" hidden></pre>
-
-          <form id="update-form" class="update-form" autocomplete="off" hidden>
-            <ul id="update-commits" class="commits"></ul>
-            <label class="visually-hidden" for="update-password">Master password</label>
-            <input
-              id="update-password"
-              type="password"
-              placeholder="Master password to install"
-              spellcheck="false"
-            />
-            <button type="submit" id="update-install">Update now</button>
-            <p class="hint">Builds master on this Mac, then restarts lockbox. Takes a minute or two.</p>
-          </form>
-        </footer>
+        <ul id="entries" class="tiles"></ul>
       </section>
+
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
       <!-- Add account: input step, then preview step -->
       <dialog id="add-dialog" class="sheet">
@@ -175,6 +163,88 @@
             </span>
           </div>
         </form>
+      </dialog>
+
+      <!-- Settings (BRIEF §10) -->
+      <dialog id="settings-dialog" class="sheet wide">
+        <div class="settings">
+          <header class="sheet-head">
+            <h2>Settings</h2>
+            <button type="button" class="icon" data-close aria-label="Close settings">✕</button>
+          </header>
+
+          <section>
+            <h3>Appearance</h3>
+            <label class="field inline"><span>Theme</span>
+              <select id="s-theme">
+                <option value="system">Match system</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+              </select>
+            </label>
+          </section>
+
+          <section>
+            <h3>Security</h3>
+            <label class="field inline"><span>Lock after inactivity</span>
+              <select id="s-autolock">
+                <option value="1">1 minute</option>
+                <option value="2">2 minutes</option>
+                <option value="5">5 minutes</option>
+                <option value="10">10 minutes</option>
+                <option value="15">15 minutes</option>
+                <option value="30">30 minutes</option>
+                <option value="60">1 hour</option>
+              </select>
+            </label>
+            <label class="field inline"><span>Clear copied codes after</span>
+              <select id="s-wipe">
+                <option value="10">10 seconds</option>
+                <option value="20">20 seconds</option>
+                <option value="30">30 seconds</option>
+                <option value="60">1 minute</option>
+                <option value="120">2 minutes</option>
+              </select>
+            </label>
+            <p id="settings-msg" class="form-error" role="alert"></p>
+          </section>
+
+          <section>
+            <h3>Master password</h3>
+            <form id="pw-form" class="stack" autocomplete="off">
+              <label class="visually-hidden" for="pw-old">Current password</label>
+              <input id="pw-old" type="password" placeholder="Current password" spellcheck="false" />
+              <label class="visually-hidden" for="pw-new">New password</label>
+              <input id="pw-new" type="password" placeholder="New password (at least 8 characters)" spellcheck="false" />
+              <label class="visually-hidden" for="pw-confirm">Confirm new password</label>
+              <input id="pw-confirm" type="password" placeholder="Confirm new password" spellcheck="false" />
+              <p id="pw-msg" class="msg" role="status" aria-live="polite"></p>
+              <button type="submit" id="pw-btn">Change password</button>
+            </form>
+          </section>
+
+          <section class="update">
+            <h3>About</h3>
+            <p class="build" id="build-info"></p>
+            <button type="button" id="update-check" class="link">Check for updates</button>
+            <p id="update-msg" class="msg" role="status" aria-live="polite"></p>
+            <pre id="update-error" class="update-error" hidden></pre>
+
+            <form id="update-form" class="update-form" autocomplete="off" hidden>
+              <ul id="update-commits" class="commits"></ul>
+              <label class="visually-hidden" for="update-password">Master password</label>
+              <input
+                id="update-password"
+                type="password"
+                placeholder="Master password to install"
+                spellcheck="false"
+              />
+              <button type="submit" id="update-install">Update now</button>
+              <p class="hint">Builds master on this Mac, then restarts lockbox. Takes a minute or two.</p>
+            </form>
+            <p class="hint">Local-only. No analytics, no accounts, no network code in the app.</p>
+          </section>
+        </div>
       </dialog>
     </main>
   </body>
