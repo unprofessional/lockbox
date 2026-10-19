@@ -11,7 +11,7 @@ A single-user, offline, local-only TOTP/HOTP authenticator desktop app for macOS
 
 ## 2. Non-goals (hard scope boundaries)
 
-- **No distribution.** No notarization, no Developer ID, no autoupdater, no publishing anywhere. The build artifact is an unsigned/ad-hoc-signed `.dmg` (`tauri build --bundles dmg`) produced by the `Jenkinsfile` on mads's MacBook (`macbook` agent) and installed on that same machine only — that is the test loop. Ad-hoc codesign if Gatekeeper ever complains.
+- **No distribution.** No notarization, no Developer ID, no autoupdater, no publishing anywhere. The app is built and installed on mads's MacBook only: `npm run release` runs every gate, builds an ad-hoc-signed `.app`, and installs it to `/Applications` as the production app (`--dmg` also keeps a `.dmg`). No CI server builds it — a Jenkins agent on the laptop would let the controller run code as mads on the machine holding the vault. Ad-hoc codesign if Gatekeeper ever complains.
 - **No networking of any kind.** No HTTP plugin, no websocket, no telemetry, no update check. Enforced structurally (absent deps) and by CSP.
 - **No cloud sync, no accounts, no multi-device.** One vault file on one machine.
 - **No Steam Guard / vendor-specific extensions** in v1 (nice-to-have later; the `totp` crate ecosystem has support).
@@ -147,7 +147,7 @@ Touch ID is the strongest control here: biometric presence is the one thing synt
 3. **M3 — codes:** entry CRUD (manual + URI paste), `totp-rs` generation, countdown, IPC surface from §8, zeroize discipline. Gate: add a known test vector entry (RFC 6238 vectors), code matches `oathtool` output.
 4. **M4 — UI parity pass:** tile grid, search, copy + clipboard wipe, add-entry sheet, toasts, dark/light. Gate: side-by-side with Authy desktop screenshots feels familiar to mads.
 5. **M5 — QR image import + encrypted export/import.** Gate: screenshot a real enrollment QR, import it, code matches phone authenticator; export → delete vault → import → identical entries.
-6. **M6 — hardening & polish:** auto-lock timers, panic hotkey, NSWindowSharingNone, unlock backoff (enforced in Rust, in-memory, resets on success: 5 free attempts then 1s doubling to a ~30s cap; `unlock` returns the remaining wait; `change_password`'s old-password check shares it), decision on accessibility exposure of codes (§9 agents), first-run wizard copy, README with threat model, ad-hoc signing script, release `.dmg` from the Jenkins pipeline. Gate: mads daily-drives it for a week with real (low-stakes first) tokens.
+6. **M6 — hardening & polish:** auto-lock timers, panic hotkey, NSWindowSharingNone, unlock backoff (enforced in Rust, in-memory, resets on success: 5 free attempts then 1s doubling to a ~30s cap; `unlock` returns the remaining wait; `change_password`'s old-password check shares it), decision on accessibility exposure of codes (§9 agents), first-run wizard copy, README with threat model. Gate: mads daily-drives it for a week with real (low-stakes first) tokens.
 
 Suggested rollout for real tokens: start by importing a burner/low-stakes account, keep phone authenticator as fallback until trust is earned.
 
@@ -173,4 +173,4 @@ Suggested rollout for real tokens: start by importing a burner/low-stakes accoun
 - Do NOT let the agent add tauri plugins beyond the clipboard one (and stronghold/keychain only at M6 if Touch ID is greenlit). Plugin creep = network/filesystem surface creep; this app's whole selling point is structural paranoia.
 - Any PR touching `tauri.conf.json` CSP or `Cargo.toml` deps gets human eyes, no exceptions.
 - Target Ventura: pin `minimumSystemVersion: "12.0"` and test-build on the actual laptop, not CI assumptions.
-- CI = `Jenkinsfile` on the `macbook` agent (the laptop itself): `npm ci` → `cargo test` → `tauri build --bundles dmg` → archived `.dmg`. Hand-testing a milestone means installing that `.dmg` and running it; keep the pipeline green from M1 on.
+- Release loop = `npm run release` on the MacBook (`scripts/release.sh`): `cargo test` → surface check → `cargo audit` → `tauri build` → install to `/Applications` → relaunch. Nothing installs unless every gate passes. Hand-testing a milestone means running that and using the installed app. (Jenkins was dropped: no Mac build agent, and making the laptop one conflicts with §9.)

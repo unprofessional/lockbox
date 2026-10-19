@@ -11,7 +11,7 @@ The full plan, scope and milestones are in [BRIEF.md](BRIEF.md).
 | Milestone | What | State |
 | --- | --- | --- |
 | M1 | Skeleton: locked-down Tauri shell, settings store, lock screen | done |
-| M2 | Vault core: Argon2id + AES-256-GCM, create/unlock/lock/change password | in review |
+| M2 | Vault core: Argon2id + AES-256-GCM, create/unlock/lock/change password | done |
 | M3 | Codes: add entries (manual, `otpauth://` paste), TOTP/HOTP generation | next |
 | M4 | UI parity: tile grid, search, copy with clipboard wipe | |
 | M5 | QR image import, encrypted export/import | |
@@ -53,7 +53,7 @@ Right now you can create a vault, lock it and unlock it. There's no way to add a
 - Rust stable (currently 1.99.1). Tauri 2.12 needs a newer Rust than 1.89, so run `rustup update stable` if a build complains about versions.
 - Node 22+ and npm.
 - Xcode command line tools.
-- `cargo-audit` for the audit step: `cargo install cargo-audit --locked`.
+- `cargo-audit` for the release checks: `cargo install cargo-audit --locked`.
 
 ## Develop
 
@@ -81,17 +81,20 @@ sh scripts/check-surface.sh
 cargo audit --file src-tauri/Cargo.lock
 ```
 
-## Build
+## Build and install
 
 ```bash
-CI=true npm run tauri build -- --bundles dmg
+npm run release
 ```
 
-This produces `src-tauri/target/release/bundle/dmg/lockbox_<version>_aarch64.dmg`. The app is ad-hoc signed and not notarized; it's meant to be installed only on this machine (see BRIEF §2).
+This is the whole release loop, run on this Mac. [scripts/release.sh](scripts/release.sh) runs the Rust tests, the surface check and `cargo audit`. If they all pass, it builds the app, installs it to `/Applications/lockbox.app` (quitting the running copy first) and relaunches it. If any check fails, nothing is installed. Your vault isn't touched; it lives in `~/Library/Application Support/lockbox`.
 
-`CI=true` makes Tauri skip its Finder layout step for the disk image. Without it, the build times out unless the process has macOS Automation permission to control Finder.
+Options:
 
-The [Jenkinsfile](Jenkinsfile) runs the same steps on the `macbook` agent: `npm ci`, `cargo test`, the surface check and `cargo audit`, then the `.dmg` build. The job builds `master`.
+- `npm run release -- --dmg` also keeps a `.dmg` in `src-tauri/target/release/bundle/dmg/`.
+- `npm run release -- --no-launch` installs without relaunching.
+
+The app is ad-hoc signed and not notarized. It's built and installed on this machine only (see BRIEF §2). There's no CI server: a Jenkins agent on this laptop would let the build server run code as you on the machine that holds your vault.
 
 ## Where your data lives
 
