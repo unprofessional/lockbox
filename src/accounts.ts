@@ -337,7 +337,7 @@ async function clickDelete() {
   const btn = $<HTMLButtonElement>("#delete-btn");
   if (btn.dataset.armed !== "true") {
     btn.dataset.armed = "true";
-    btn.textContent = `Delete ${label(editing)} for good`;
+    btn.textContent = "Delete permanently";
     return;
   }
   try {

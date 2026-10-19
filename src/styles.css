@@ -511,6 +511,7 @@ button.icon:hover {
 }
 
 button.danger {
+  white-space: nowrap;
   background: transparent;
   color: var(--accent);
   border: 1px solid var(--warn-border);
