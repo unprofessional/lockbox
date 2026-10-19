@@ -47,6 +47,8 @@ Right now you can create a vault, lock it and unlock it. There's no way to add a
 - **What would close the gap:** Touch ID (planned for v1.1). Synthetic clicks and keystrokes can't fake a fingerprint.
 - **Your own control:** be deliberate about which apps hold Screen Recording and Accessibility permission.
 
+**The in-app updater** lets an unlocked session build and install `master`. Installing requires re-entering the master password, so clicks alone can't install new code. Anyone who can push to `master` on GitHub can ship code to this laptop the next time you update, so treat push access to `master` like access to your vault.
+
 ## Requirements
 
 - macOS 12 or later. Developed and tested on macOS 13.7.8 (Ventura).
@@ -93,6 +95,12 @@ Options:
 
 - `npm run release -- --dmg` also keeps a `.dmg` in `src-tauri/target/release/bundle/dmg/`.
 - `npm run release -- --no-launch` installs without relaunching.
+
+### Updating from inside the app
+
+When the vault is unlocked, **Check for updates** compares the installed build with `master` on GitHub and lists any new commits. **Update now** asks for your master password again, then builds `master` and installs it with the same checks as `npm run release`, and lockbox restarts. If the build or any check fails, nothing is installed and the error appears in the app. The full log is in `~/Library/Logs/lockbox/update.log`.
+
+The app itself still has no network code. Both buttons run a single helper script bundled inside the app ([update-helper.sh](src-tauri/resources/update-helper.sh)), with fixed modes the webview can't change. git does the fetching. The helper builds in its own copy of the repo at `~/Library/Caches/lockbox/release` (a git worktree), so it never disturbs whatever branch you have checked out. The first update takes a few minutes; later ones reuse the build cache.
 
 The app is ad-hoc signed and not notarized. It's built and installed on this machine only (see BRIEF §2). There's no CI server: a Jenkins agent on this laptop would let the build server run code as you on the machine that holds your vault.
 
@@ -163,6 +171,9 @@ These are the only commands the webview can call. Each one is declared in [build
 | `settings_get` | yes (the lock screen needs the theme) |
 | `settings_set(settings)` | no |
 | `change_password(old, new)` | no |
+| `app_info` | yes (version and build commit only) |
+| `update_check` | no |
+| `update_install(password)` | no, and it also re-checks the master password |
 
 More commands arrive with M3 (entries and codes); the full planned list is in BRIEF §8.
 
@@ -173,6 +184,7 @@ Keeping the app's attack surface small is the whole point, so these rules are ch
 - **No Tauri plugins,** except the clipboard plugin (planned for M4). Never `http`, `fs` or `shell`.
 - **No networking crates** anywhere in the dependency tree (`reqwest`, `hyper`, `ureq`, websocket crates and so on).
 - **No core or plugin permissions** in the capabilities file; only this app's own commands.
+- **Process spawning only in `src/update.rs`,** which runs nothing but the bundled update helper.
 - **A locked CSP:** `default-src 'none'`, with no remote origins. The only `connect-src` entries are Tauri's local IPC channel.
 - **No devtools in release builds.**
 

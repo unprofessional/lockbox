@@ -11,6 +11,9 @@
     "allow-lock",
     "allow-change-password",
     "allow-settings-get",
-    "allow-settings-set"
+    "allow-settings-set",
+    "allow-app-info",
+    "allow-update-check",
+    "allow-update-install"
   ]
 }

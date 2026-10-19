@@ -240,6 +240,12 @@ impl Vault {
         })
     }
 
+    /// Re-checks the master password against this vault (for actions that
+    /// need fresh proof of the password, like installing an update).
+    pub fn verify_password(&self, password: &str) -> Result<(), VaultError> {
+        unwrap_key(&self.key_wrap, password, &self.salt, &self.kdf).map(drop)
+    }
+
     /// Verifies `old`, then re-keys everything: new vault key, new salt,
     /// current default KDF params, payload re-encrypted (BRIEF §8).
     pub fn change_password(&mut self, old: &str, new: &str) -> Result<(), VaultError> {
@@ -253,7 +259,7 @@ impl Vault {
         kdf: KdfParams,
     ) -> Result<(), VaultError> {
         check_password(new)?;
-        unwrap_key(&self.key_wrap, old, &self.salt, &self.kdf)?;
+        self.verify_password(old)?;
 
         let vault_key: Key = Zeroizing::new(<[u8; KEY_LEN]>::generate());
         let salt = <[u8; SALT_LEN]>::generate();
@@ -709,6 +715,17 @@ mod tests {
         // The in-memory vault still works with the original password.
         v.save().unwrap();
         Vault::unlock(&path, PW).unwrap();
+    }
+
+    #[test]
+    fn verify_password_checks_against_vault() {
+        let (_d, path) = setup();
+        let v = Vault::create(&path, PW, FAST).unwrap();
+        assert!(v.verify_password(PW).is_ok());
+        assert!(matches!(
+            v.verify_password("not the password"),
+            Err(VaultError::WrongPassword)
+        ));
     }
 
     #[test]

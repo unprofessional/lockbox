@@ -71,6 +71,26 @@
         <h1>Vault unlocked</h1>
         <p class="lede">No accounts yet. Adding codes arrives in M3.</p>
         <button type="button" id="lock-btn" class="secondary">Lock</button>
+
+        <div class="update">
+          <p class="build" id="build-info"></p>
+          <button type="button" id="update-check" class="link">Check for updates</button>
+          <p id="update-msg" class="msg" role="status" aria-live="polite"></p>
+          <pre id="update-error" class="update-error" hidden></pre>
+
+          <form id="update-form" class="update-form" autocomplete="off" hidden>
+            <ul id="update-commits" class="commits"></ul>
+            <label class="visually-hidden" for="update-password">Master password</label>
+            <input
+              id="update-password"
+              type="password"
+              placeholder="Master password to install"
+              spellcheck="false"
+            />
+            <button type="submit" id="update-install">Update now</button>
+            <p class="hint">Builds master on this Mac, then restarts lockbox. Takes a minute or two.</p>
+          </form>
+        </div>
       </section>
     </main>
   </body>
