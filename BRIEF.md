@@ -31,7 +31,7 @@ A single-user, offline, local-only TOTP/HOTP authenticator desktop app for macOS
 | TOTP/HOTP                    | `totp-rs` (with `otpauth` feature)                                | generation, countdown, otpauth:// parse                      |
 | KDF                          | `argon2` (rust-argon2 / RustCrypto)                               | argon2id, params in §6                                       |
 | Encryption                   | `aes-gcm` (RustCrypto)                                            | AES-256-GCM, 96-bit random nonce                             |
-| QR decode                    | `rqrr` + image capture path                                       | see §7; fallback = manual URI paste is MANDATORY             |
+| QR decode                    | `rqrr` (no default features) + `image` (PNG/JPEG only)         | from file picker, drag and drop or ⌘V paste; manual URI paste stays |
 | QR encode (for export/share) | `qrcode`                                                          | optional, v1.1                                               |
 | Keychain (optional unlock)   | `security-framework` or Tauri `plugin-stronghold`-adjacent custom | see §6.3                                                     |
 | Clipboard                    | NSPasteboard via `objc2-app-kit` (already in Tauri's tree) + timer wipe | 30s default; no plugin (decided M4, see §8)                  |
@@ -91,7 +91,7 @@ Writes are atomic: serialize → encrypt → write `vault.enc.tmp` → fsync →
 4. **Bulk import** (v1.1): Aegis encrypted/plain JSON export and 2FAS-style exports → mapped into entries. Also plain-text `otpauth-migration://` protobuf (Google Authenticator export) via `otpauth-migration` parsing — nice-to-have, put behind a flag.
 5. Duplicate detection: same (issuer, account, seed) → warn and skip/replace choice.
 
-**Export**: encrypted (`vault.enc`-compatible envelope, may use a separate export password) + optional plain otpauth:// text dump with a big red warning. Export is the backup ritual; document it in-app.
+**Export** (decided 2026-10-19, M5): encrypted only, in the `vault.enc` envelope, sealed with the **master password** (no separate export password: two passwords to juggle is the bigger risk). A backup opens with the master password in effect when it was made. No plain otpauth:// dump. Touch ID (v1.1) won't replace the password on backups, which must open on a machine without this Keychain. Import merges: adds accounts not already present (same issuer + account + seed), never removes or overwrites. Export is the backup ritual; document it in-app.
 
 ## 8. Tauri command surface (the whole IPC API)
 
@@ -111,7 +111,10 @@ edit_entry(id, issuer, account, tags) -> ok   // metadata only; re-keying seed =
 delete_entry(id) -> ok            // UI asks for a second click
 copy_code(id) -> {code, wipe_seconds}   // Rust writes clipboard (private markers) + schedules wipe; HOTP advances
 change_password(old, new) -> ok   // re-encrypt payload
-export_encrypted(path, password) / import_encrypted(path, password)
+entry_preview_qr(<raw image bytes>) -> preview                // M5: QR screenshot → same preview/confirm flow
+export_backup(password) -> {path, accounts} | null             // re-checks master pw; native save panel (cancel → null)
+import_stage(<raw file bytes>) -> token                        // holds the picked backup until its password arrives
+import_confirm(token, password) -> {added, skipped}            // wrong password keeps it staged
 settings_get() / settings_set()   // auto-lock minutes, copy-wipe seconds, theme
 app_info() -> {version, commit, dirty}          // allowed while locked
 update_check() -> {status, latest, commits[]}   // unlocked only; runs bundled helper `check`
@@ -125,6 +128,7 @@ M3 deviations from the original list, on purpose:
 - `search(query)` was dropped: filtering issuer/account/tags happens in the webview, which already holds that metadata. Seeds aren't searchable anyway.
 - `otpauth://` parsing is a small in-house parser (`src/otp.rs`) rather than totp-rs's `otpauth` feature, because that feature rejects HOTP links and pulls in the `url` crate. totp-rs (no default features; `std`, `zeroize`) does the code generation for both TOTP and HOTP.
 - **M4: no clipboard plugin.** `src/clipboard.rs` writes NSPasteboard directly, so the webview gets no clipboard permission, copies carry the nspasteboard.org Concealed/Transient markers (clipboard managers skip them), are current-host-only (Universal Clipboard doesn't sync them to other Apple devices), and the wipe only clears if nothing else was copied since. Locking also clears a code still on the clipboard. lockbox ships with zero Tauri plugins.
+- **M5: files without plugins.** Images and backups are read by the webview's own file picker / drag and drop / paste and sent to Rust as raw invoke bodies (no JSON number arrays). Saving a backup uses the native NSSavePanel from Rust (`src/panel.rs`), so the webview never picks or sees a path to write to and no dialog/fs plugin is needed.
 - Secrets must decode to at least 80 bits. RFC 4226 asks for 128, but many real services still issue 80-bit seeds.
 
 Nothing else. No `fs` plugin, no `shell` plugin, no `http` plugin in `Cargo.toml`/capabilities at all. `tauri.conf.json`: `"csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' asset:"`. Devtools disabled in release profile.

@@ -24,17 +24,23 @@ argon2 = { version = "0.6", features = ["zeroize"] }
 aes-gcm = { version = "0.11", features = ["zeroize"] }
 base64 = "0.23"
 zeroize = { version = "1.9", features = ["derive"] }
+# QR import from images (BRIEF §7.2): PNG/JPEG decode only, greyscale fed
+# straight to rqrr (its own image integration off).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rqrr = { version = "0.11", default-features = false }
 totp-rs = { version = "6", default-features = false, features = ["std", "zeroize"] }
 
 # Clipboard (BRIEF §4): NSPasteboard directly, already in Tauri's dependency
 # tree, instead of tauri-plugin-clipboard-manager. See src/clipboard.rs.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSSavePanel", "NSPanel", "NSWindow", "NSResponder", "NSApplication"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSURL"] }
 
 [dev-dependencies]
 tempfile = "3"
+# Generates real QR images for the qr.rs tests.
+qrcode = { version = "0.14", default-features = false }
 # Mock runtime for the IPC contract tests in lib.rs.
 tauri = { version = "2", features = ["test"] }
 

@@ -855,3 +855,62 @@ dialog.sheet.wide {
 .settings .update .link {
   align-self: flex-start;
 }
+
+/* ---- QR import and backups (M5) ---- */
+
+.tabs.three {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+#pane-qr {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 22px 16px;
+  border: 1.5px dashed var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--muted);
+  text-align: center;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.dropzone p {
+  margin: 0;
+}
+
+.dropzone strong {
+  color: var(--text);
+}
+
+.dropzone svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+}
+
+.dropzone:focus-visible,
+.dropzone.over {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--warn-bg);
+}
+
+.dropzone.busy {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+#backup-msg {
+  overflow-wrap: anywhere;
+}

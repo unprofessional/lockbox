@@ -86,12 +86,26 @@
       <dialog id="add-dialog" class="sheet">
         <form id="add-input" autocomplete="off">
           <h2>Add account</h2>
-          <div class="tabs" role="tablist">
-            <button type="button" role="tab" id="tab-uri" class="tab" aria-selected="true">Paste link</button>
+          <div class="tabs three" role="tablist">
+            <button type="button" role="tab" id="tab-qr" class="tab" aria-selected="true">QR image</button>
+            <button type="button" role="tab" id="tab-uri" class="tab" aria-selected="false">Paste link</button>
             <button type="button" role="tab" id="tab-manual" class="tab" aria-selected="false">Enter manually</button>
           </div>
 
-          <div id="pane-uri">
+          <div id="pane-qr">
+            <div id="dropzone" class="dropzone" tabindex="0">
+              <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true">
+                <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
+                <rect x="3" y="14" width="7" height="7" rx="1" /><path d="M14 14h3v3h-3zM18 18h3v3h-3zM14 20h2M20 14v2" />
+              </svg>
+              <p><strong>Drop a screenshot of the QR code</strong><br />or paste one with ⌘V</p>
+              <button type="button" id="qr-pick" class="secondary small">Choose image…</button>
+            </div>
+            <input id="qr-file" type="file" accept="image/png,image/jpeg" hidden />
+            <p class="hint">Tip: ⇧⌘4 then hold Control copies a screenshot to the clipboard, ready to paste here.</p>
+          </div>
+
+          <div id="pane-uri" hidden>
             <label class="field">
               <span>otpauth:// link</span>
               <textarea id="uri" rows="3" spellcheck="false" placeholder="otpauth://totp/Service:you@example.com?secret=…"></textarea>
@@ -207,6 +221,27 @@
               </select>
             </label>
             <p id="settings-msg" class="form-error" role="alert"></p>
+          </section>
+
+          <section>
+            <h3>Backup</h3>
+            <p class="hint">Backups are encrypted with your master password. Keep one somewhere safe: it's the only way back if this Mac is lost.</p>
+            <form id="export-form" class="stack" autocomplete="off">
+              <label class="visually-hidden" for="export-password">Master password</label>
+              <input id="export-password" type="password" placeholder="Master password to export" spellcheck="false" />
+              <button type="submit" id="export-btn">Export backup…</button>
+            </form>
+            <form id="import-form" class="stack" autocomplete="off">
+              <button type="button" id="import-pick" class="secondary">Import backup…</button>
+              <input id="import-file" type="file" accept=".lockbox,.enc,application/json" hidden />
+              <div id="import-step" class="stack" hidden>
+                <p id="import-file-name" class="hint"></p>
+                <label class="visually-hidden" for="import-password">Backup password</label>
+                <input id="import-password" type="password" placeholder="Master password when this backup was made" spellcheck="false" />
+                <button type="submit" id="import-btn">Import accounts</button>
+              </div>
+            </form>
+            <p id="backup-msg" class="msg" role="status" aria-live="polite"></p>
           </section>
 
           <section>

@@ -176,7 +176,7 @@ function render() {
   void tick();
 }
 
-async function refresh() {
+export async function refresh() {
   entries = await invoke<EntryMeta[]>("list_entries");
   entries.sort((a, b) => label(a).localeCompare(label(b), undefined, { sensitivity: "base" }));
   render();
@@ -220,12 +220,19 @@ export function stopAccounts() {
 
 // ---- add ----
 
-function setTab(manual: boolean) {
-  $<HTMLElement>("#tab-uri").setAttribute("aria-selected", String(!manual));
-  $<HTMLElement>("#tab-manual").setAttribute("aria-selected", String(manual));
-  $<HTMLElement>("#pane-uri").hidden = manual;
-  $<HTMLElement>("#pane-manual").hidden = !manual;
-  $<HTMLElement>(manual ? "#m-issuer" : "#uri").focus();
+type Tab = "qr" | "uri" | "manual";
+const FOCUS: Record<Tab, string> = { qr: "#dropzone", uri: "#uri", manual: "#m-issuer" };
+
+function setTab(tab: Tab) {
+  for (const t of ["qr", "uri", "manual"] as Tab[]) {
+    $<HTMLElement>(`#tab-${t}`).setAttribute("aria-selected", String(t === tab));
+    $<HTMLElement>(`#pane-${t}`).hidden = t !== tab;
+  }
+  $<HTMLElement>(FOCUS[tab]).focus();
+}
+
+function activeTab(): Tab {
+  return (["qr", "uri", "manual"] as Tab[]).find((t) => !$<HTMLElement>(`#pane-${t}`).hidden)!;
 }
 
 function clearAddForm() {
@@ -258,7 +265,7 @@ function openAdd() {
   clearAddForm();
   showAddStep(false);
   $<HTMLDialogElement>("#add-dialog").showModal();
-  setTab(false);
+  setTab("qr");
 }
 
 function describe(p: Preview): string {
@@ -270,9 +277,13 @@ async function submitAddInput(e: SubmitEvent) {
   e.preventDefault();
   const err = $<HTMLElement>("#add-error");
   err.textContent = "";
-  const manual = !$<HTMLElement>("#pane-manual").hidden;
+  const tab = activeTab();
+  if (tab === "qr") {
+    $<HTMLInputElement>("#qr-file").click();
+    return;
+  }
   try {
-    if (manual) {
+    if (tab === "manual") {
       const kind = $<HTMLSelectElement>("#m-kind").value as Kind;
       pending = await invoke<Preview>("entry_preview_manual", {
         form: {
@@ -299,7 +310,35 @@ async function submitAddInput(e: SubmitEvent) {
   // The secret has been handed to Rust; don't keep it in the DOM.
   $<HTMLTextAreaElement>("#uri").value = "";
   $<HTMLInputElement>("#m-seed").value = "";
+  showPreview(pending);
+}
 
+/** The QR screenshot goes to Rust as raw bytes; only the preview comes back. */
+async function previewImage(file: Blob | null) {
+  const err = $<HTMLElement>("#add-error");
+  err.textContent = "";
+  if (!file) return;
+  if (!/^image\/(png|jpeg)$/.test(file.type)) {
+    err.textContent = "Use a PNG or JPEG image (screenshots are PNG).";
+    shake($<HTMLElement>("#add-input"));
+    return;
+  }
+  const zone = $<HTMLElement>("#dropzone");
+  zone.classList.add("busy");
+  try {
+    pending = await invoke<Preview>("entry_preview_qr", new Uint8Array(await file.arrayBuffer()));
+  } catch (ex) {
+    err.textContent = errorText(ex);
+    shake($<HTMLElement>("#add-input"));
+    return;
+  } finally {
+    zone.classList.remove("busy", "over");
+    $<HTMLInputElement>("#qr-file").value = "";
+  }
+  showPreview(pending);
+}
+
+function showPreview(pending: Preview) {
   $<HTMLElement>("#p-issuer").textContent = pending.issuer || "—";
   $<HTMLElement>("#p-account").textContent = pending.account || "—";
   $<HTMLElement>("#p-format").textContent = describe(pending);
@@ -389,8 +428,43 @@ async function clickDelete() {
 export function setupAccounts() {
   $<HTMLInputElement>("#search").addEventListener("input", render);
   $<HTMLButtonElement>("#add-btn").addEventListener("click", openAdd);
-  $<HTMLButtonElement>("#tab-uri").addEventListener("click", () => setTab(false));
-  $<HTMLButtonElement>("#tab-manual").addEventListener("click", () => setTab(true));
+  for (const t of ["qr", "uri", "manual"] as Tab[]) {
+    $<HTMLButtonElement>(`#tab-${t}`).addEventListener("click", () => setTab(t));
+  }
+
+  // QR screenshots: choose, drop or paste.
+  const zone = $<HTMLElement>("#dropzone");
+  const fileInput = $<HTMLInputElement>("#qr-file");
+  // The whole zone (including its button) opens the picker.
+  zone.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => previewImage(fileInput.files?.[0] ?? null));
+  zone.addEventListener("keydown", (e) => {
+    if (e.target === zone && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault();
+      fileInput.click();
+    }
+  });
+  zone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    zone.classList.add("over");
+  });
+  zone.addEventListener("dragleave", () => zone.classList.remove("over"));
+  zone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    void previewImage(e.dataTransfer?.files[0] ?? null);
+  });
+  // Dropping anywhere else in the window shouldn't navigate away.
+  window.addEventListener("dragover", (e) => e.preventDefault());
+  window.addEventListener("drop", (e) => e.preventDefault());
+  document.addEventListener("paste", (e) => {
+    const dialog = $<HTMLDialogElement>("#add-dialog");
+    if (!dialog.open || !$<HTMLElement>("#add-preview").hidden) return;
+    const item = [...(e.clipboardData?.items ?? [])].find((i) => i.type.startsWith("image/"));
+    if (!item) return; // ordinary text paste into the link or manual fields
+    e.preventDefault();
+    setTab("qr");
+    void previewImage(item.getAsFile());
+  });
   $<HTMLSelectElement>("#m-kind").addEventListener("change", syncKindFields);
   $<HTMLFormElement>("#add-input").addEventListener("submit", submitAddInput);
   $<HTMLFormElement>("#add-preview").addEventListener("submit", submitConfirm);

@@ -12,6 +12,7 @@
 
 use objc2_app_kit::{NSPasteboard, NSPasteboardContentsOptions, NSPasteboardTypeString};
 use objc2_foundation::NSString;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 const CONCEALED: &str = "org.nspasteboard.ConcealedType";
@@ -21,11 +22,21 @@ const TRANSIENT: &str = "org.nspasteboard.TransientType";
 /// clipboard still holds it.
 pub type Stamp = isize;
 
+/// AppKit pasteboard calls aren't safe to make concurrently (a copy racing a
+/// scheduled wipe, or parallel tests), so every access goes through this lock.
+static PASTEBOARD: Mutex<()> = Mutex::new(());
+
+fn exclusive() -> MutexGuard<'static, ()> {
+    PASTEBOARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub fn copy(text: &str) -> Stamp {
+    let _guard = exclusive();
     copy_to(&NSPasteboard::generalPasteboard(), text)
 }
 
 pub fn clear_if_unchanged(stamp: Stamp) -> bool {
+    let _guard = exclusive();
     clear_if_unchanged_on(&NSPasteboard::generalPasteboard(), stamp)
 }
 
@@ -82,6 +93,7 @@ mod tests {
 
     #[test]
     fn copy_writes_text_and_privacy_markers() {
+        let _guard = exclusive();
         let pb = scratch();
         copy_to(&pb, "483920");
         assert_eq!(text(&pb).as_deref(), Some("483920"));
@@ -92,6 +104,7 @@ mod tests {
 
     #[test]
     fn copy_replaces_previous_contents() {
+        let _guard = exclusive();
         // prepareForNewContentsWithOptions must clear like clearContents did,
         // and each copy must get a new stamp.
         let pb = scratch();
@@ -106,6 +119,7 @@ mod tests {
 
     #[test]
     fn wipe_clears_our_copy() {
+        let _guard = exclusive();
         let pb = scratch();
         let stamp = copy_to(&pb, "483920");
         assert!(clear_if_unchanged_on(&pb, stamp));
@@ -114,6 +128,7 @@ mod tests {
 
     #[test]
     fn wipe_leaves_later_copies_alone() {
+        let _guard = exclusive();
         let pb = scratch();
         let stamp = copy_to(&pb, "483920");
         // The user copies something else before the wipe fires.
