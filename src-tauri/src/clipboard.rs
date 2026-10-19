@@ -6,9 +6,11 @@
 //! - codes carry the nspasteboard.org Concealed/Transient markers, which
 //!   clipboard managers (Raycast, Alfred, Paste, Maccy, …) honor by not
 //!   recording them in their history;
+//! - codes stay on this Mac: Universal Clipboard (Handoff) won't send them
+//!   to the user's iPhone/iPad, where the wipe here could never clear them;
 //! - the wipe only clears the clipboard if nothing else was copied since.
 
-use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+use objc2_app_kit::{NSPasteboard, NSPasteboardContentsOptions, NSPasteboardTypeString};
 use objc2_foundation::NSString;
 use std::time::Duration;
 
@@ -36,7 +38,9 @@ pub fn schedule_wipe(stamp: Stamp, after: Duration) {
 }
 
 fn copy_to(pb: &NSPasteboard, text: &str) -> Stamp {
-    pb.clearContents();
+    // Clears the pasteboard like clearContents, and keeps the new contents off
+    // Universal Clipboard.
+    pb.prepareForNewContentsWithOptions(NSPasteboardContentsOptions::CurrentHostOnly);
     // SAFETY: NSPasteboardTypeString is an immutable AppKit constant.
     let string_type = unsafe { NSPasteboardTypeString };
     pb.setString_forType(&NSString::from_str(text), string_type);
@@ -84,6 +88,20 @@ mod tests {
         let t = types(&pb);
         assert!(t.iter().any(|x| x == CONCEALED), "{t:?}");
         assert!(t.iter().any(|x| x == TRANSIENT), "{t:?}");
+    }
+
+    #[test]
+    fn copy_replaces_previous_contents() {
+        // prepareForNewContentsWithOptions must clear like clearContents did,
+        // and each copy must get a new stamp.
+        let pb = scratch();
+        pb.clearContents();
+        pb.setString_forType(&NSString::from_str("old"), unsafe { NSPasteboardTypeString });
+        let before = pb.changeCount();
+        let stamp = copy_to(&pb, "483920");
+        assert_ne!(stamp, before);
+        assert_eq!(text(&pb).as_deref(), Some("483920"));
+        assert_ne!(copy_to(&pb, "111111"), stamp);
     }
 
     #[test]

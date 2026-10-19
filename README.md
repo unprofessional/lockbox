@@ -164,6 +164,7 @@ Saves are atomic: write `vault.enc.tmp`, fsync, rename over `vault.enc`, fsync t
 Clicking a tile asks Rust to copy its code (`copy_code`). Counter-based (HOTP) tiles get their next code. The webview never touches the clipboard and has no permission to.
 
 - **Kept out of clipboard history:** Rust writes the code straight to the macOS clipboard ([clipboard.rs](src-tauri/src/clipboard.rs)) and tags it with the `org.nspasteboard.ConcealedType` and `TransientType` markers. Clipboard managers such as Raycast, Alfred, Paste and Maccy respect these and don't save the code.
+- **Kept on this Mac:** copies are marked current-host-only, so Universal Clipboard (Handoff) doesn't send them to your iPhone or iPad, where lockbox's wipe couldn't reach them.
 - **Wiped afterwards:** after the delay set in Settings (30 seconds by default), lockbox clears the code, but only if nothing else has been copied since. Locking the vault also clears a code that's still on the clipboard.
 - **Auto-lock:** after the configured minutes with no mouse or keyboard activity, lockbox locks itself. Locking on sleep and when the window is hidden comes in M6.
 
