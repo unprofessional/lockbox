@@ -1,7 +1,7 @@
 # Project Brief: `lockbox` — a local-only TOTP authenticator for macOS (Authy-desktop-style)
 
 - **Date:** 2026-10-10
-- **Origin:** mads's idea after Authy killed its desktop app (EOL Mar 2024, no security reason given — cost/focus + post-2022-breach mobile-only pivot). He wants "as close to Authy desktop as possible" for his MacBook Pro, Ventura 12.7.8.
+- **Origin:** mads's idea after Authy killed its desktop app (EOL Mar 2024, no security reason given — cost/focus + post-2022-breach mobile-only pivot). He wants "as close to Authy desktop as possible" for his MacBook Pro, Ventura 13.7.8.
 - **Owner/driver:** mads runs the sessions; this brief is written so Codex (or any coding agent) can execute it in slices. mads has shipped one Tauri app before (a diff checker), so scaffold familiarity is assumed.
 - **Working name:** `lockbox` (rename freely — nothing here depends on the name).
 
@@ -19,7 +19,7 @@ A single-user, offline, local-only TOTP/HOTP authenticator desktop app for macOS
 
 ## 3. Target platform
 
-- macOS Ventura 12.7.8 (build + run on the MacBook Pro). Keep it arch-agnostic (`--target universal-apple-darwin` if needed; Tauri v2 MSRV is fine on Ventura — verify `tauri.conf.json` `macOS.minimumSystemVersion` = `12.0`).
+- macOS Ventura 13.7.8 (build + run on the MacBook Pro). Keep it arch-agnostic (`--target universal-apple-darwin` if needed; Tauri v2 MSRV is fine on Ventura — verify `tauri.conf.json` `macOS.minimumSystemVersion` = `12.0`).
 - Rust stable. Node + Vite for the frontend (or plain static TS; no framework requirement — keep the JS side minimal on purpose).
 
 ## 4. Tech stack & crates
