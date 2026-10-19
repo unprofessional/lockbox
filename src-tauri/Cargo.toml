@@ -1,0 +1,31 @@
+[package]
+name = "lockbox"
+version = "0.1.0"
+description = "Local-only TOTP/HOTP authenticator for macOS"
+authors = ["unprofessional"]
+edition = "2024"
+
+[lib]
+# The `_lib` suffix keeps the lib name distinct from the bin name.
+name = "lockbox_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+# Dependency policy (BRIEF §4, §14): no tauri plugins in M1, no http/fs/shell
+# plugins ever. Any change here needs human review.
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
