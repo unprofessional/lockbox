@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { setupAccounts, startAccounts, stopAccounts } from "./accounts";
+import { $, errorText, shake } from "./ui";
 
 type Theme = "system" | "light" | "dark";
 
@@ -9,8 +11,6 @@ interface Settings {
 }
 
 const MIN_PASSWORD_CHARS = 8; // mirrors vault::MIN_PASSWORD_CHARS
-
-const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 
 const screens = {
   create: $<HTMLFormElement>("#create-form"),
@@ -25,8 +25,13 @@ function show(name: keyof typeof screens) {
   const focus: Record<keyof typeof screens, string> = {
     create: "#new-password",
     unlock: "#password",
-    vault: "#lock-btn",
+    vault: "#search",
   };
+  if (name === "vault") {
+    startAccounts();
+  } else {
+    stopAccounts();
+  }
   $<HTMLElement>(focus[name]).focus();
 }
 
@@ -36,16 +41,6 @@ function applyTheme(theme: Theme) {
   } else {
     document.documentElement.dataset.theme = theme;
   }
-}
-
-function shake(el: HTMLElement) {
-  el.classList.remove("shake");
-  void el.offsetWidth; // restart the animation
-  el.classList.add("shake");
-}
-
-function errorText(e: unknown): string {
-  return typeof e === "string" ? e : "Something went wrong.";
 }
 
 /** Rough strength score 0–4. Guidance only; Rust enforces the minimum. */
@@ -262,6 +257,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   setupCreate();
   setupUnlock();
   setupVault();
+  setupAccounts();
   void showBuildInfo();
 
   try {

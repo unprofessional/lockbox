@@ -12,12 +12,12 @@ The full plan, scope and milestones are in [BRIEF.md](BRIEF.md).
 | --- | --- | --- |
 | M1 | Skeleton: locked-down Tauri shell, settings store, lock screen | done |
 | M2 | Vault core: Argon2id + AES-256-GCM, create/unlock/lock/change password | done |
-| M3 | Codes: add entries (manual, `otpauth://` paste), TOTP/HOTP generation | next |
-| M4 | UI parity: tile grid, search, copy with clipboard wipe | |
+| M3 | Codes: add entries (manual, `otpauth://` paste), TOTP/HOTP generation | in review |
+| M4 | UI parity: tile grid, copy with clipboard wipe | next |
 | M5 | QR image import, encrypted export/import | |
 | M6 | Hardening: auto-lock, panic hotkey, screen-capture exclusion | |
 
-Right now you can create a vault, lock it and unlock it. There's no way to add accounts until M3.
+Right now you can create a vault, add accounts by pasting an `otpauth://` link or typing the secret, see live codes (time-based and counter-based), search, and edit or delete accounts. To copy a code, select it and press ⌘C; one-click copy with a clipboard wipe arrives in M4.
 
 ## Threat model
 
@@ -171,11 +171,20 @@ These are the only commands the webview can call. Each one is declared in [build
 | `settings_get` | yes (the lock screen needs the theme) |
 | `settings_set(settings)` | no |
 | `change_password(old, new)` | no |
+| `list_entries` | no (metadata only, never seeds) |
+| `get_codes` | no |
+| `hotp_next(id)` | no |
+| `entry_preview_uri(uri)`, `entry_preview_manual(form)` | no |
+| `entry_confirm(token, replace)` | no |
+| `edit_entry(id, issuer, account, tags)` | no |
+| `delete_entry(id)` | no |
 | `app_info` | yes (version and build commit only) |
 | `update_check` | no |
 | `update_install(password)` | no, and it also re-checks the master password |
 
-More commands arrive with M3 (entries and codes); the full planned list is in BRIEF §8.
+Adding an account takes two steps. The preview step parses the link or form in Rust and returns the details without the secret, plus a one-time token. The confirm step saves it. The parsed secret waits in Rust in the meantime and is dropped if you lock.
+
+The IPC contract tests in [lib.rs](src-tauri/src/lib.rs) check that every command in `build.rs` is granted in the capabilities file and classified as allowed or refused while locked, and they call every command that should be refused to make sure it is.
 
 ## Security surface
 

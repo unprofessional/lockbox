@@ -100,14 +100,16 @@ unlock(password) -> bool
 lock()
 is_locked() -> bool
 create_vault(password) -> bool
-list_entries() -> [{id, issuer, account, digits, period, kind, tags}]   // NO seeds
-get_code(id) -> {code, seconds_remaining}   // or hotp counter value
-add_entry_uri(uri) -> preview/confirm two-step
-add_entry_manual(form) -> id
-edit_entry(id, meta) -> ok        // metadata only; re-keying seed = delete+add in v1
-delete_entry(id) -> ok            // with confirm
-search(query) -> filtered list
-copy_code(id) -> ok               // Rust writes clipboard + schedules 30s wipe
+vault_exists() -> bool                    // first-run wizard vs unlock screen
+list_entries() -> [{id, issuer, account, digits, period, algorithm, kind, tags}]   // NO seeds
+get_codes() -> [{id, code, seconds_remaining, period}]   // all TOTP codes at one instant
+hotp_next(id) -> code             // returns code for stored counter, then advances + saves it
+entry_preview_uri(uri) -> preview{token, …, duplicate}   // step 1; nothing saved
+entry_preview_manual(form) -> preview                    // step 1; nothing saved
+entry_confirm(token, replace) -> id                      // step 2; duplicate refused unless replace
+edit_entry(id, issuer, account, tags) -> ok   // metadata only; re-keying seed = delete+add in v1
+delete_entry(id) -> ok            // UI asks for a second click
+copy_code(id) -> ok               // M4: Rust writes clipboard + schedules 30s wipe
 change_password(old, new) -> ok   // re-encrypt payload
 export_encrypted(path, password) / import_encrypted(path, password)
 settings_get() / settings_set()   // auto-lock minutes, copy-wipe seconds, theme
@@ -115,6 +117,14 @@ app_info() -> {version, commit, dirty}          // allowed while locked
 update_check() -> {status, latest, commits[]}   // unlocked only; runs bundled helper `check`
 update_install(password)                        // unlocked + password re-check; runs helper `install`
 ```
+
+M3 deviations from the original list, on purpose:
+
+- `get_codes()` replaces per-entry `get_code(id)`: one call per second for the whole list, all codes from the same instant.
+- Adding is always preview → confirm through a one-time token; the parsed seed waits in Rust (cleared on lock), never in the webview.
+- `search(query)` was dropped: filtering issuer/account/tags happens in the webview, which already holds that metadata. Seeds aren't searchable anyway.
+- `otpauth://` parsing is a small in-house parser (`src/otp.rs`) rather than totp-rs's `otpauth` feature, because that feature rejects HOTP links and pulls in the `url` crate. totp-rs (no default features; `std`, `zeroize`) does the code generation for both TOTP and HOTP.
+- Secrets must decode to at least 80 bits. RFC 4226 asks for 128, but many real services still issue 80-bit seeds.
 
 Nothing else. No `fs` plugin, no `shell` plugin, no `http` plugin in `Cargo.toml`/capabilities at all. `tauri.conf.json`: `"csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' asset:"`. Devtools disabled in release profile.
 

@@ -20,6 +20,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use crate::otp::{self, Algo, Kind, NewEntry};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 pub const FORMAT_VERSION: u32 = 1;
@@ -67,7 +68,7 @@ impl KdfParams {
 }
 
 /// A TOTP/HOTP account. Lives only inside the decrypted payload; never crosses
-/// IPC with its seed (BRIEF §5). CRUD arrives in M3.
+/// IPC with its seed (BRIEF §5).
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct Entry {
     pub id: String,
@@ -76,8 +77,10 @@ pub struct Entry {
     pub seed_b32: String,
     pub digits: u32,
     pub period: u32,
-    pub algorithm: String,
-    pub kind: String,
+    #[zeroize(skip)]
+    pub algorithm: Algo,
+    #[zeroize(skip)]
+    pub kind: Kind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub counter: Option<u64>,
     pub added_at: u64,
@@ -130,6 +133,8 @@ pub enum VaultError {
     Tampered,
     Corrupt(String),
     UnsupportedVersion(u32),
+    NoSuchEntry,
+    Invalid(String),
     Io(io::Error),
 }
 
@@ -146,6 +151,8 @@ impl fmt::Display for VaultError {
             Self::Tampered => write!(f, "vault failed integrity check (modified or damaged)"),
             Self::Corrupt(why) => write!(f, "vault file is unreadable: {why}"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported vault version {v}"),
+            Self::NoSuchEntry => write!(f, "no such account"),
+            Self::Invalid(why) => write!(f, "{why}"),
             Self::Io(e) => write!(f, "vault I/O error: {e}"),
         }
     }
@@ -306,6 +313,154 @@ impl Vault {
             serde_json::to_vec_pretty(&env).map_err(|e| VaultError::Corrupt(e.to_string()))?;
         write_atomic_with_backup(&self.path, &json)?;
         Ok(())
+    }
+}
+
+// ---- entries (BRIEF §6.1, §7, §8) ----
+
+/// Metadata the webview may see: everything except the seed.
+#[derive(Serialize)]
+pub struct EntryMeta {
+    pub id: String,
+    pub issuer: String,
+    pub account: String,
+    pub digits: u32,
+    pub period: u32,
+    pub algorithm: Algo,
+    pub kind: Kind,
+    pub tags: Vec<String>,
+}
+
+impl Entry {
+    pub fn meta(&self) -> EntryMeta {
+        EntryMeta {
+            id: self.id.clone(),
+            issuer: self.issuer.clone(),
+            account: self.account.clone(),
+            digits: self.digits,
+            period: self.period,
+            algorithm: self.algorithm,
+            kind: self.kind,
+            tags: self.tags.clone(),
+        }
+    }
+
+    /// TOTP code at `now`. HOTP codes come from `Vault::next_hotp`.
+    pub fn totp_code(&self, now: u64) -> Result<String, String> {
+        otp::code(&self.seed_b32, self.algorithm, self.digits, Kind::Totp, self.period, now)
+    }
+}
+
+fn new_id() -> String {
+    let b = <[u8; 16]>::generate();
+    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..])
+}
+
+impl Vault {
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
+    #[cfg(test)]
+    pub fn entry(&self, id: &str) -> Option<&Entry> {
+        self.entries.iter().find(|e| e.id == id)
+    }
+
+    /// An existing entry with the same issuer, account and seed (BRIEF §7.5).
+    pub fn find_duplicate(&self, new: &NewEntry) -> Option<&Entry> {
+        self.entries.iter().find(|e| {
+            e.issuer.eq_ignore_ascii_case(&new.issuer)
+                && e.account.eq_ignore_ascii_case(&new.account)
+                && e.seed_b32 == *new.seed_b32
+        })
+    }
+
+    /// Adds `new`, optionally replacing the entry `replace` in place. Saves.
+    pub fn add(&mut self, new: &NewEntry, replace: Option<&str>) -> Result<String, VaultError> {
+        let entry = Entry {
+            id: new_id(),
+            issuer: new.issuer.clone(),
+            account: new.account.clone(),
+            seed_b32: new.seed_b32.to_string(),
+            digits: new.digits,
+            period: new.period,
+            algorithm: new.algorithm,
+            kind: new.kind,
+            counter: new.counter,
+            added_at: now(),
+            tags: Vec::new(),
+        };
+        let id = entry.id.clone();
+        self.mutate(|entries| {
+            match replace.and_then(|r| entries.iter().position(|e| e.id == r)) {
+                Some(i) => entries[i] = entry,
+                None => entries.push(entry),
+            }
+            Ok(())
+        })?;
+        Ok(id)
+    }
+
+    /// Metadata only; changing the seed is delete + add (BRIEF §8).
+    pub fn edit(
+        &mut self,
+        id: &str,
+        issuer: &str,
+        account: &str,
+        tags: Vec<String>,
+    ) -> Result<(), VaultError> {
+        let (issuer, account) = (issuer.trim(), account.trim());
+        if issuer.is_empty() && account.is_empty() {
+            return Err(VaultError::Invalid("give at least an issuer or an account name".into()));
+        }
+        self.mutate(|entries| {
+            let e = entries.iter_mut().find(|e| e.id == id).ok_or(VaultError::NoSuchEntry)?;
+            e.issuer = issuer.into();
+            e.account = account.into();
+            e.tags = tags;
+            Ok(())
+        })
+    }
+
+    pub fn delete(&mut self, id: &str) -> Result<(), VaultError> {
+        self.mutate(|entries| {
+            let i = entries.iter().position(|e| e.id == id).ok_or(VaultError::NoSuchEntry)?;
+            entries.remove(i);
+            Ok(())
+        })
+    }
+
+    /// HOTP: returns the code for the stored counter, then advances and saves
+    /// the counter so the next press yields the next code (RFC 4226).
+    pub fn next_hotp(&mut self, id: &str) -> Result<String, VaultError> {
+        let mut out = String::new();
+        self.mutate(|entries| {
+            let e = entries.iter_mut().find(|e| e.id == id).ok_or(VaultError::NoSuchEntry)?;
+            if e.kind != Kind::Hotp {
+                return Err(VaultError::Invalid("not a counter-based (HOTP) account".into()));
+            }
+            let counter = e.counter.unwrap_or(0);
+            out = otp::code(&e.seed_b32, e.algorithm, e.digits, Kind::Hotp, e.period, counter)
+                .map_err(VaultError::Invalid)?;
+            e.counter = Some(counter + 1);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    /// Applies `f` and saves; if either fails, the in-memory entries are put
+    /// back so memory always matches what's on disk.
+    fn mutate(
+        &mut self,
+        f: impl FnOnce(&mut Vec<Entry>) -> Result<(), VaultError>,
+    ) -> Result<(), VaultError> {
+        let before = self.entries.clone();
+        let result = f(&mut self.entries).and_then(|()| self.save());
+        if result.is_err() {
+            self.entries = before;
+        }
+        result
     }
 }
 
@@ -481,8 +636,8 @@ mod tests {
             seed_b32: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ".into(),
             digits: 6,
             period: 30,
-            algorithm: "SHA1".into(),
-            kind: "totp".into(),
+            algorithm: Algo::SHA1,
+            kind: Kind::Totp,
             counter: None,
             added_at: 1,
             tags: vec!["work".into()],
@@ -726,6 +881,104 @@ mod tests {
             v.verify_password("not the password"),
             Err(VaultError::WrongPassword)
         ));
+    }
+
+    fn new_entry(issuer: &str, seed: &str) -> NewEntry {
+        otp::from_manual(otp::ManualForm {
+            issuer: issuer.into(),
+            account: "me@example.com".into(),
+            seed: seed.into(),
+            digits: None,
+            period: None,
+            algorithm: None,
+            kind: None,
+            counter: None,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn add_edit_delete_persist() {
+        let (_d, path) = setup();
+        let mut v = Vault::create(&path, PW, FAST).unwrap();
+        let a = v.add(&new_entry("Acme", "JBSWY3DPEHPK3PXP"), None).unwrap();
+        let b = v.add(&new_entry("Beta", "GEZDGNBVGY3TQOJQ"), None).unwrap();
+        assert_ne!(a, b);
+        assert_eq!(a.len(), 36, "uuid-shaped id");
+        v.edit(&a, "Acme Corp", "ops@example.com", vec!["work".into()]).unwrap();
+        v.delete(&b).unwrap();
+        drop(v);
+
+        let v = Vault::unlock(&path, PW).unwrap();
+        assert_eq!(v.entries().len(), 1);
+        let e = v.entry(&a).unwrap();
+        assert_eq!((e.issuer.as_str(), e.account.as_str()), ("Acme Corp", "ops@example.com"));
+        assert_eq!(e.tags, vec!["work".to_string()]);
+        assert_eq!(e.seed_b32, "JBSWY3DPEHPK3PXP");
+    }
+
+    #[test]
+    fn duplicates_are_found_and_can_be_replaced() {
+        let (_d, path) = setup();
+        let mut v = Vault::create(&path, PW, FAST).unwrap();
+        let id = v.add(&new_entry("Acme", "JBSWY3DPEHPK3PXP"), None).unwrap();
+        let again = new_entry("acme", "jbsw y3dp ehpk 3pxp");
+        assert_eq!(v.find_duplicate(&again).map(|e| e.id.as_str()), Some(id.as_str()));
+        assert!(v.find_duplicate(&new_entry("Acme", "GEZDGNBVGY3TQOJQ")).is_none());
+
+        let new_id = v.add(&again, Some(&id)).unwrap();
+        assert_eq!(v.entries().len(), 1);
+        assert_eq!(v.entries()[0].id, new_id);
+    }
+
+    #[test]
+    fn missing_entries_and_bad_edits_are_errors() {
+        let (_d, path) = setup();
+        let mut v = Vault::create(&path, PW, FAST).unwrap();
+        assert!(matches!(v.delete("nope"), Err(VaultError::NoSuchEntry)));
+        assert!(matches!(v.edit("nope", "a", "b", vec![]), Err(VaultError::NoSuchEntry)));
+        let id = v.add(&new_entry("Acme", "JBSWY3DPEHPK3PXP"), None).unwrap();
+        assert!(matches!(v.edit(&id, " ", "", vec![]), Err(VaultError::Invalid(_))));
+        assert!(matches!(v.next_hotp(&id), Err(VaultError::Invalid(_))));
+    }
+
+    #[test]
+    fn hotp_counter_advances_and_persists() {
+        let (_d, path) = setup();
+        let mut v = Vault::create(&path, PW, FAST).unwrap();
+        let mut e = new_entry("Acme", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+        e.kind = Kind::Hotp;
+        e.counter = Some(0);
+        let id = v.add(&e, None).unwrap();
+        // RFC 4226 vectors for counters 0 and 1.
+        assert_eq!(v.next_hotp(&id).unwrap(), "755224");
+        assert_eq!(v.next_hotp(&id).unwrap(), "287082");
+        drop(v);
+        let mut v = Vault::unlock(&path, PW).unwrap();
+        assert_eq!(v.entry(&id).unwrap().counter, Some(2));
+        assert_eq!(v.next_hotp(&id).unwrap(), "359152");
+    }
+
+    #[test]
+    fn failed_save_rolls_back_memory() {
+        let (_d, path) = setup();
+        let mut v = Vault::create(&path, PW, FAST).unwrap();
+        // A directory squatting on the temp-file path makes the save fail.
+        fs::create_dir(sibling(&path, "tmp")).unwrap();
+        let r = v.add(&new_entry("Acme", "JBSWY3DPEHPK3PXP"), None);
+        assert!(matches!(r, Err(VaultError::Io(_))));
+        assert!(v.entries().is_empty(), "memory matches disk");
+        fs::remove_dir(sibling(&path, "tmp")).unwrap();
+        assert!(Vault::unlock(&path, PW).unwrap().entries().is_empty());
+    }
+
+    #[test]
+    fn totp_code_uses_entry_settings() {
+        let (_d, path) = setup();
+        let mut v = Vault::create(&path, PW, FAST).unwrap();
+        let id = v.add(&new_entry("Acme", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"), None).unwrap();
+        // RFC 6238 SHA1 t=59 → 94287082; 6-digit form 287082.
+        assert_eq!(v.entry(&id).unwrap().totp_code(59).unwrap(), "287082");
     }
 
     #[test]
