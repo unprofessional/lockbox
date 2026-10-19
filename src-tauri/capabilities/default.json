@@ -4,7 +4,12 @@
   "description": "The whole IPC surface the main window may call (BRIEF §8). No core plugins, no fs/http/shell.",
   "windows": ["main"],
   "permissions": [
+    "allow-vault-exists",
     "allow-is-locked",
+    "allow-create-vault",
+    "allow-unlock",
+    "allow-lock",
+    "allow-change-password",
     "allow-settings-get",
     "allow-settings-set"
   ]

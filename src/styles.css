@@ -7,6 +7,13 @@
   --accent: #d6324a;
   --accent-text: #ffffff;
   --focus: rgba(214, 50, 74, 0.35);
+  --warn-bg: #fdf0f2;
+  --warn-border: #f2c4cc;
+  --meter-off: #e2e2e8;
+  --meter-1: #d6324a;
+  --meter-2: #d98a1c;
+  --meter-3: #6b9e2e;
+  --meter-4: #2e8b57;
   color-scheme: light;
 }
 
@@ -19,6 +26,13 @@
     --muted: #8e8e9b;
     --accent: #ec4d63;
     --focus: rgba(236, 77, 99, 0.4);
+    --warn-bg: #2a1a1e;
+    --warn-border: #5a2a33;
+    --meter-off: #33333d;
+    --meter-1: #ec4d63;
+    --meter-2: #e5a03a;
+    --meter-3: #8cc152;
+    --meter-4: #4cbb7f;
     color-scheme: dark;
   }
 }
@@ -31,6 +45,13 @@
   --muted: #8e8e9b;
   --accent: #ec4d63;
   --focus: rgba(236, 77, 99, 0.4);
+  --warn-bg: #2a1a1e;
+  --warn-border: #5a2a33;
+  --meter-off: #33333d;
+  --meter-1: #ec4d63;
+  --meter-2: #e5a03a;
+  --meter-3: #8cc152;
+  --meter-4: #4cbb7f;
   color-scheme: dark;
 }
 
@@ -53,21 +74,25 @@ body {
   -webkit-user-select: none;
 }
 
-.lock-screen {
+.screen {
   display: grid;
   place-items: center;
   height: 100%;
   padding: 16px;
 }
 
-.unlock-card {
+.card {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 12px;
   width: 100%;
-  max-width: 300px;
+  max-width: 320px;
   text-align: center;
+}
+
+[hidden] {
+  display: none !important;
 }
 
 .mark {
@@ -130,7 +155,86 @@ button:active {
   filter: brightness(0.92);
 }
 
-.unlock-msg {
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+  filter: none;
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.mark.open {
+  background: var(--meter-4);
+}
+
+.lede {
+  margin: -4px 0 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.meter {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  margin-top: -4px;
+}
+
+.meter span {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--meter-off);
+}
+
+.meter[data-score="1"] span:nth-child(-n + 1) { background: var(--meter-1); }
+.meter[data-score="2"] span:nth-child(-n + 2) { background: var(--meter-2); }
+.meter[data-score="3"] span:nth-child(-n + 3) { background: var(--meter-3); }
+.meter[data-score="4"] span { background: var(--meter-4); }
+
+.meter-label {
+  margin: -6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: left;
+}
+
+.warning {
+  padding: 10px 12px;
+  border: 1px solid var(--warn-border);
+  border-radius: 8px;
+  background: var(--warn-bg);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
+}
+
+.warning strong {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--accent);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.msg {
   min-height: 1.4em;
   margin: 0;
   color: var(--muted);
