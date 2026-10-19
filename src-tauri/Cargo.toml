@@ -24,9 +24,12 @@ argon2 = { version = "0.6", features = ["zeroize"] }
 aes-gcm = { version = "0.11", features = ["zeroize"] }
 base64 = "0.23"
 zeroize = { version = "1.9", features = ["derive"] }
+totp-rs = { version = "6", default-features = false, features = ["std", "zeroize"] }
 
 [dev-dependencies]
 tempfile = "3"
+# Mock runtime for the IPC contract tests in lib.rs.
+tauri = { version = "2", features = ["test"] }
 
 # Argon2id at 64 MiB is unbearably slow unoptimized; keep dev unlocks fast.
 [profile.dev.package.argon2]
