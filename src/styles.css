@@ -267,3 +267,84 @@ button.secondary {
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+/* ---- updates (unlocked screen) ---- */
+
+.update {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.build {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+button.link {
+  height: auto;
+  padding: 2px 0;
+  background: none;
+  color: var(--accent);
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.update-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.commits {
+  max-height: 132px;
+  margin: 0;
+  padding: 6px 8px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  list-style: none;
+  font-size: 12px;
+  text-align: left;
+}
+
+.commits li {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  line-height: 1.7;
+}
+
+.commits code {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.update-error {
+  max-height: 160px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--warn-border);
+  border-radius: 8px;
+  background: var(--warn-bg);
+  color: var(--text);
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+}

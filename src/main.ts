@@ -142,18 +142,127 @@ function setupUnlock() {
   });
 }
 
+interface AppInfo {
+  version: string;
+  commit: string;
+  dirty: boolean;
+}
+
+interface UpdateCheck {
+  status: "up-to-date" | "available" | "unknown-installed";
+  installed: string;
+  latest: string;
+  commits: { sha: string; subject: string }[];
+}
+
+const short = (sha: string) => sha.slice(0, 7);
+
+function resetUpdate() {
+  $<HTMLElement>("#update-msg").textContent = "";
+  $<HTMLElement>("#update-error").hidden = true;
+  $<HTMLFormElement>("#update-form").hidden = true;
+  $<HTMLInputElement>("#update-password").value = "";
+}
+
+function showUpdateError(text: string) {
+  const pre = $<HTMLElement>("#update-error");
+  pre.textContent = text;
+  pre.title = text;
+  pre.hidden = false;
+}
+
 function setupVault() {
   $<HTMLButtonElement>("#lock-btn").addEventListener("click", async () => {
     await invoke("lock");
+    resetUpdate();
     $<HTMLElement>("#unlock-msg").textContent = "";
     show("unlock");
   });
+
+  const checkBtn = $<HTMLButtonElement>("#update-check");
+  const msg = $<HTMLElement>("#update-msg");
+  const form = $<HTMLFormElement>("#update-form");
+  const list = $<HTMLUListElement>("#update-commits");
+  const pw = $<HTMLInputElement>("#update-password");
+  const installBtn = $<HTMLButtonElement>("#update-install");
+
+  checkBtn.addEventListener("click", async () => {
+    resetUpdate();
+    checkBtn.disabled = true;
+    msg.textContent = "Checking master…";
+    try {
+      const r = await invoke<UpdateCheck>("update_check");
+      if (r.status === "up-to-date") {
+        msg.textContent = `Up to date with master (${short(r.latest)}).`;
+        return;
+      }
+      msg.textContent =
+        r.status === "available"
+          ? `${r.commits.length === 20 ? "20+" : r.commits.length} new on master:`
+          : "This build isn't from a known commit. Latest master:";
+      list.replaceChildren(
+        ...r.commits.map((c) => {
+          const li = document.createElement("li");
+          const code = document.createElement("code");
+          code.textContent = short(c.sha);
+          li.append(code, " ", c.subject);
+          li.title = c.subject;
+          return li;
+        }),
+      );
+      form.hidden = false;
+      pw.focus();
+    } catch (err) {
+      msg.textContent = "";
+      showUpdateError(errorText(err));
+    } finally {
+      checkBtn.disabled = false;
+    }
+  });
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!pw.value || installBtn.disabled) return;
+    $<HTMLElement>("#update-error").hidden = true;
+    installBtn.disabled = checkBtn.disabled = pw.disabled = true;
+    installBtn.textContent = "Updating…";
+    msg.textContent = "Building master. lockbox will restart when it's done.";
+    try {
+      // Only returns if the update failed; on success this app is replaced.
+      await invoke("update_install", { password: pw.value });
+    } catch (err) {
+      const text = errorText(err);
+      msg.textContent = "";
+      if (text === "Wrong password.") {
+        msg.textContent = text;
+        shake(form);
+      } else {
+        showUpdateError(text);
+      }
+    } finally {
+      pw.value = "";
+      installBtn.disabled = checkBtn.disabled = pw.disabled = false;
+      installBtn.textContent = "Update now";
+    }
+  });
+}
+
+async function showBuildInfo() {
+  try {
+    const info = await invoke<AppInfo>("app_info");
+    $<HTMLElement>("#build-info").textContent =
+      `lockbox ${info.version} · ${short(info.commit) || "unknown commit"}` +
+      (info.dirty ? " + local changes" : "");
+  } catch {
+    // Not essential.
+  }
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
   setupCreate();
   setupUnlock();
   setupVault();
+  void showBuildInfo();
 
   try {
     applyTheme((await invoke<Settings>("settings_get")).theme);

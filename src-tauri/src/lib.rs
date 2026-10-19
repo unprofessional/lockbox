@@ -1,10 +1,12 @@
 mod settings;
+mod update;
 mod vault;
 
 use settings::Settings;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::{AppHandle, Manager, State};
 use vault::{KdfParams, Vault, VaultError};
 use zeroize::Zeroizing;
 
@@ -14,13 +16,18 @@ struct AppState {
     vault_path: PathBuf,
     /// `None` = locked. Dropping the `Vault` zeroizes its key and entries.
     vault: Mutex<Option<Vault>>,
+    /// Bundled update-helper.sh; the only thing the app may run.
+    update_helper: PathBuf,
+    /// One update check or install at a time.
+    update_busy: AtomicBool,
 }
 
 const LOCKED: &str = "vault is locked";
 
 // IPC surface (BRIEF §8). Every command here must also be listed in build.rs
 // and granted in capabilities/default.json. Everything except vault_exists,
-// is_locked, create_vault, unlock and settings_get rejects while locked.
+// is_locked, create_vault, unlock, settings_get and app_info rejects while
+// locked.
 //
 // Vault commands are async so the ~0.3s Argon2id derivation runs off the main
 // thread and the window stays responsive. Passwords are wrapped in
@@ -101,6 +108,54 @@ fn settings_set(state: State<'_, AppState>, settings: Settings) -> Result<Settin
     Ok(settings)
 }
 
+/// Version and the commit this build came from. Nothing secret.
+#[tauri::command]
+fn app_info(app: AppHandle) -> update::AppInfo {
+    update::app_info(app.package_info().version.to_string())
+}
+
+/// Runs `f` while holding the single update slot. Requires an unlocked vault;
+/// with `password`, also requires it to be the master password.
+fn with_update_slot<T>(
+    state: &AppState,
+    password: Option<&str>,
+    f: impl FnOnce(&std::path::Path) -> Result<T, String>,
+) -> Result<T, String> {
+    {
+        let guard = state.vault.lock().unwrap();
+        let vault = guard.as_ref().ok_or(LOCKED)?;
+        if let Some(pw) = password {
+            vault.verify_password(pw).map_err(|e| match e {
+                VaultError::WrongPassword => "Wrong password.".to_string(),
+                e => e.to_string(),
+            })?;
+        }
+    }
+    if state.update_busy.swap(true, Ordering::SeqCst) {
+        return Err("an update check or install is already running".into());
+    }
+    let result = f(&state.update_helper);
+    state.update_busy.store(false, Ordering::SeqCst);
+    result
+}
+
+/// Fetches master (via git, in the bundled helper) and compares it with the
+/// commit this build came from.
+#[tauri::command]
+async fn update_check(state: State<'_, AppState>) -> Result<update::CheckResult, String> {
+    with_update_slot(&state, None, update::check)
+}
+
+/// Builds master and installs it. Installing new code needs fresh proof of the
+/// master password, not just an unlocked session (BRIEF §9, desktop agents).
+/// On success the app is quit and relaunched by the release script, so this
+/// only returns on failure.
+#[tauri::command]
+async fn update_install(state: State<'_, AppState>, password: String) -> Result<(), String> {
+    let password = Zeroizing::new(password);
+    with_update_slot(&state, Some(&password), update::install)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -118,6 +173,8 @@ pub fn run() {
                 settings: Mutex::new(settings),
                 vault_path: dir.join("vault.enc"),
                 vault: Mutex::new(None),
+                update_helper: app.path().resource_dir()?.join(update::HELPER),
+                update_busy: AtomicBool::new(false),
             });
             Ok(())
         })
@@ -129,7 +186,10 @@ pub fn run() {
             lock,
             change_password,
             settings_get,
-            settings_set
+            settings_set,
+            app_info,
+            update_check,
+            update_install
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

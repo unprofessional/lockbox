@@ -32,7 +32,12 @@ if grep -hoE '"[a-z0-9-]+:[a-z0-9:-]+"' src-tauri/capabilities/*.json | grep -v 
   bad "plugin/core permission granted in capabilities"
 fi
 
-# 5. CSP locked: default-src 'none', no remote origins beyond Tauri's IPC.
+# 5. Only the updater may spawn processes (it runs the bundled helper only).
+if grep -lE 'std::process|Command::new|process::Command' src-tauri/src/*.rs | grep -vx 'src-tauri/src/update.rs' ; then
+  bad "process spawning outside src-tauri/src/update.rs"
+fi
+
+# 6. CSP locked: default-src 'none', no remote origins beyond Tauri's IPC.
 csp=$(node -e 'const c=require("./src-tauri/tauri.conf.json");process.stdout.write(c.app.security.csp||"")')
 case "$csp" in
   *"default-src 'none'"*) ;;
@@ -45,4 +50,4 @@ fi
 if [ "$fail" -ne 0 ]; then
   exit 1
 fi
-echo "PASS surface check: no plugins, no networking crates, locked capabilities and CSP"
+echo "PASS surface check: no plugins, no networking crates, process spawning only in update.rs, locked capabilities and CSP"
