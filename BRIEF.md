@@ -1,7 +1,7 @@
 # Project Brief: `lockbox` — a local-only TOTP authenticator for macOS (Authy-desktop-style)
 
 - **Date:** 2026-10-10
-- **Origin:** mads's idea after Authy killed its desktop app (EOL Mar 2024, no security reason given — cost/focus + post-2022-breach mobile-only pivot). He wants "as close to Authy desktop as possible" for his MacBook Pro, Ventura 12.7.8.
+- **Origin:** mads's idea after Authy killed its desktop app (EOL Mar 2024, no security reason given — cost/focus + post-2022-breach mobile-only pivot). He wants "as close to Authy desktop as possible" for his MacBook Pro, Ventura 13.7.8.
 - **Owner/driver:** mads runs the sessions; this brief is written so Codex (or any coding agent) can execute it in slices. mads has shipped one Tauri app before (a diff checker), so scaffold familiarity is assumed.
 - **Working name:** `lockbox` (rename freely — nothing here depends on the name).
 
@@ -11,7 +11,7 @@ A single-user, offline, local-only TOTP/HOTP authenticator desktop app for macOS
 
 ## 2. Non-goals (hard scope boundaries)
 
-- **No distribution.** No notarization, no Developer ID, no autoupdater, no installer. `tauri build` → local `.app` only. Ad-hoc codesign if Gatekeeper ever complains.
+- **No distribution.** No notarization, no Developer ID, no autoupdater, no publishing anywhere. The build artifact is an unsigned/ad-hoc-signed `.dmg` (`tauri build --bundles dmg`) produced by the `Jenkinsfile` on mads's MacBook (`macbook` agent) and installed on that same machine only — that is the test loop. Ad-hoc codesign if Gatekeeper ever complains.
 - **No networking of any kind.** No HTTP plugin, no websocket, no telemetry, no update check. Enforced structurally (absent deps) and by CSP.
 - **No cloud sync, no accounts, no multi-device.** One vault file on one machine.
 - **No Steam Guard / vendor-specific extensions** in v1 (nice-to-have later; the `totp` crate ecosystem has support).
@@ -19,7 +19,7 @@ A single-user, offline, local-only TOTP/HOTP authenticator desktop app for macOS
 
 ## 3. Target platform
 
-- macOS Ventura 12.7.8 (build + run on the MacBook Pro). Keep it arch-agnostic (`--target universal-apple-darwin` if needed; Tauri v2 MSRV is fine on Ventura — verify `tauri.conf.json` `macOS.minimumSystemVersion` = `12.0`).
+- macOS Ventura 13.7.8 (build + run on the MacBook Pro). Keep it arch-agnostic (`--target universal-apple-darwin` if needed; Tauri v2 MSRV is fine on Ventura — verify `tauri.conf.json` `macOS.minimumSystemVersion` = `12.0`).
 - Rust stable. Node + Vite for the frontend (or plain static TS; no framework requirement — keep the JS side minimal on purpose).
 
 ## 4. Tech stack & crates
@@ -137,7 +137,7 @@ Paranoid extras (cheap, do them): `NSWindowSharingNone` so the window is exclude
 3. **M3 — codes:** entry CRUD (manual + URI paste), `totp-rs` generation, countdown, IPC surface from §8, zeroize discipline. Gate: add a known test vector entry (RFC 6238 vectors), code matches `oathtool` output.
 4. **M4 — UI parity pass:** tile grid, search, copy + clipboard wipe, add-entry sheet, toasts, dark/light. Gate: side-by-side with Authy desktop screenshots feels familiar to mads.
 5. **M5 — QR image import + encrypted export/import.** Gate: screenshot a real enrollment QR, import it, code matches phone authenticator; export → delete vault → import → identical entries.
-6. **M6 — hardening & polish:** auto-lock timers, panic hotkey, NSWindowSharingNone, first-run wizard copy, README with threat model, ad-hoc signing script, `tauri build` release artifact. Gate: mads daily-drives it for a week with real (low-stakes first) tokens.
+6. **M6 — hardening & polish:** auto-lock timers, panic hotkey, NSWindowSharingNone, first-run wizard copy, README with threat model, ad-hoc signing script, release `.dmg` from the Jenkins pipeline. Gate: mads daily-drives it for a week with real (low-stakes first) tokens.
 
 Suggested rollout for real tokens: start by importing a burner/low-stakes account, keep phone authenticator as fallback until trust is earned.
 
@@ -162,3 +162,4 @@ Suggested rollout for real tokens: start by importing a burner/low-stakes accoun
 - Do NOT let the agent add tauri plugins beyond the clipboard one (and stronghold/keychain only at M6 if Touch ID is greenlit). Plugin creep = network/filesystem surface creep; this app's whole selling point is structural paranoia.
 - Any PR touching `tauri.conf.json` CSP or `Cargo.toml` deps gets human eyes, no exceptions.
 - Target Ventura: pin `minimumSystemVersion: "12.0"` and test-build on the actual laptop, not CI assumptions.
+- CI = `Jenkinsfile` on the `macbook` agent (the laptop itself): `npm ci` → `cargo test` → `tauri build --bundles dmg` → archived `.dmg`. Hand-testing a milestone means installing that `.dmg` and running it; keep the pipeline green from M1 on.
