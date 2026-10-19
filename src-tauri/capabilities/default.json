@@ -13,6 +13,7 @@
     "allow-list-entries",
     "allow-get-codes",
     "allow-hotp-next",
+    "allow-copy-code",
     "allow-entry-preview-uri",
     "allow-entry-preview-manual",
     "allow-entry-confirm",

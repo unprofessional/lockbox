@@ -19,6 +19,7 @@ fn main() {
                 "list_entries",
                 "get_codes",
                 "hotp_next",
+                "copy_code",
                 "entry_preview_uri",
                 "entry_preview_manual",
                 "entry_confirm",

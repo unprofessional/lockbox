@@ -34,7 +34,7 @@ A single-user, offline, local-only TOTP/HOTP authenticator desktop app for macOS
 | QR decode                    | `rqrr` + image capture path                                       | see §7; fallback = manual URI paste is MANDATORY             |
 | QR encode (for export/share) | `qrcode`                                                          | optional, v1.1                                               |
 | Keychain (optional unlock)   | `security-framework` or Tauri `plugin-stronghold`-adjacent custom | see §6.3                                                     |
-| Clipboard                    | tauri clipboard plugin + timer wipe                               | 30s default                                                  |
+| Clipboard                    | NSPasteboard via `objc2-app-kit` (already in Tauri's tree) + timer wipe | 30s default; no plugin (decided M4, see §8)                  |
 | Zeroization                  | `zeroize`                                                         | vault key, plaintext seed bytes, passwords                   |
 | Serialization                | `serde` + `serde_json`                                            | vault entry metadata (secrets stay encrypted blob)           |
 | Random                       | `rand` (OsRng)                                                    | nonces, salts, vault key                                     |
@@ -109,7 +109,7 @@ entry_preview_manual(form) -> preview                    // step 1; nothing save
 entry_confirm(token, replace) -> id                      // step 2; duplicate refused unless replace
 edit_entry(id, issuer, account, tags) -> ok   // metadata only; re-keying seed = delete+add in v1
 delete_entry(id) -> ok            // UI asks for a second click
-copy_code(id) -> ok               // M4: Rust writes clipboard + schedules 30s wipe
+copy_code(id) -> {code, wipe_seconds}   // Rust writes clipboard (private markers) + schedules wipe; HOTP advances
 change_password(old, new) -> ok   // re-encrypt payload
 export_encrypted(path, password) / import_encrypted(path, password)
 settings_get() / settings_set()   // auto-lock minutes, copy-wipe seconds, theme
@@ -124,6 +124,7 @@ M3 deviations from the original list, on purpose:
 - Adding is always preview → confirm through a one-time token; the parsed seed waits in Rust (cleared on lock), never in the webview.
 - `search(query)` was dropped: filtering issuer/account/tags happens in the webview, which already holds that metadata. Seeds aren't searchable anyway.
 - `otpauth://` parsing is a small in-house parser (`src/otp.rs`) rather than totp-rs's `otpauth` feature, because that feature rejects HOTP links and pulls in the `url` crate. totp-rs (no default features; `std`, `zeroize`) does the code generation for both TOTP and HOTP.
+- **M4: no clipboard plugin.** `src/clipboard.rs` writes NSPasteboard directly, so the webview gets no clipboard permission, copies carry the nspasteboard.org Concealed/Transient markers (clipboard managers skip them), and the wipe only clears if nothing else was copied since. Locking also clears a code still on the clipboard. lockbox ships with zero Tauri plugins.
 - Secrets must decode to at least 80 bits. RFC 4226 asks for 128, but many real services still issue 80-bit seeds.
 
 Nothing else. No `fs` plugin, no `shell` plugin, no `http` plugin in `Cargo.toml`/capabilities at all. `tauri.conf.json`: `"csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' asset:"`. Devtools disabled in release profile.
@@ -186,7 +187,7 @@ Suggested rollout for real tokens: start by importing a burner/low-stakes accoun
 ## 14. Dispatch notes (for whoever runs Codex)
 
 - One milestone per session; each session starts from the merged state of the previous.
-- Do NOT let the agent add tauri plugins beyond the clipboard one (and stronghold/keychain only at M6 if Touch ID is greenlit). Plugin creep = network/filesystem surface creep; this app's whole selling point is structural paranoia.
+- Do NOT let the agent add tauri plugins (zero today; the clipboard is handled without one since M4). Stronghold/keychain only at M6 if Touch ID is greenlit. Plugin creep = network/filesystem surface creep; this app's whole selling point is structural paranoia.
 - Any PR touching `tauri.conf.json` CSP or `Cargo.toml` deps gets human eyes, no exceptions.
 - Target Ventura: pin `minimumSystemVersion: "12.0"` and test-build on the actual laptop, not CI assumptions.
 - Release loop = `npm run release` on the MacBook (`scripts/release.sh`): `cargo test` → surface check → `cargo audit` → `tauri build` → install to `/Applications` → relaunch. Nothing installs unless every gate passes. Hand-testing a milestone means running that and using the installed app. (Jenkins was dropped: no Mac build agent, and making the laptop one conflicts with §9.)

@@ -1,7 +1,7 @@
 // Accounts list, live codes, add/edit/delete (BRIEF §7, §8, §10).
 // Seeds never reach this file: Rust returns metadata and rendered codes only.
 import { invoke } from "@tauri-apps/api/core";
-import { $, errorText, shake } from "./ui";
+import { $, errorText, shake, toast } from "./ui";
 
 type Kind = "totp" | "hotp";
 
@@ -52,7 +52,32 @@ function label(e: { issuer: string; account: string }) {
   return e.issuer || e.account;
 }
 
-// ---- list and codes ----
+// ---- tile grid and codes ----
+
+interface Copied {
+  code: string;
+  wipe_seconds: number;
+}
+
+/** A stable hue per issuer, so each account keeps its colour (Authy-style). */
+function hue(name: string): number {
+  let h = 0;
+  for (const ch of name.toLowerCase()) h = (h * 31 + ch.codePointAt(0)!) % 360;
+  return h;
+}
+
+async function copy(e: EntryMeta, tile: HTMLElement) {
+  try {
+    const r = await invoke<Copied>("copy_code", { id: e.id });
+    if (e.kind === "hotp") tile.querySelector(".code")!.textContent = groupDigits(r.code);
+    tile.classList.remove("copied");
+    void tile.offsetWidth;
+    tile.classList.add("copied");
+    toast(`Copied ${label(e)} · clipboard clears in ${r.wipe_seconds}s`);
+  } catch (err) {
+    toast(errorText(err), true);
+  }
+}
 
 function render() {
   const list = $<HTMLUListElement>("#entries");
@@ -70,9 +95,18 @@ function render() {
   list.replaceChildren(
     ...shown.map((e) => {
       const li = document.createElement("li");
-      li.className = "entry";
+      li.className = "tile";
       li.dataset.id = e.id;
+      li.tabIndex = 0;
+      li.setAttribute("role", "button");
+      li.setAttribute(
+        "aria-label",
+        e.kind === "hotp" ? `Copy next code for ${label(e)}` : `Copy code for ${label(e)}`,
+      );
+      li.style.setProperty("--hue", String(hue(label(e))));
 
+      const head = document.createElement("div");
+      head.className = "tile-head";
       const avatar = document.createElement("span");
       avatar.className = "avatar";
       avatar.textContent = (label(e)[0] ?? "?").toUpperCase();
@@ -87,34 +121,6 @@ function render() {
       account.className = "account";
       account.textContent = e.issuer ? e.account : "";
       names.append(issuer, account);
-      if (e.tags.length) {
-        const tags = document.createElement("span");
-        tags.className = "tags";
-        tags.textContent = e.tags.join(" · ");
-        names.append(tags);
-      }
-
-      const code = document.createElement("span");
-      code.className = "code";
-      code.textContent = e.kind === "hotp" ? "––– –––" : "";
-      code.title = "Select and press ⌘C to copy (one-click copy arrives in M4)";
-
-      const side = document.createElement("div");
-      side.className = "side";
-      if (e.kind === "totp") {
-        side.innerHTML =
-          '<svg class="ring" viewBox="0 0 24 24" aria-hidden="true">' +
-          '<circle class="ring-bg" cx="12" cy="12" r="9"/>' +
-          '<circle class="ring-fg" cx="12" cy="12" r="9"/></svg>';
-        side.querySelector(".ring-fg")!.setAttribute("stroke-dasharray", String(RING));
-      } else {
-        const next = document.createElement("button");
-        next.type = "button";
-        next.className = "secondary small";
-        next.textContent = "Next code";
-        next.addEventListener("click", () => nextHotp(e.id, code));
-        side.append(next);
-      }
 
       const edit = document.createElement("button");
       edit.type = "button";
@@ -122,9 +128,48 @@ function render() {
       edit.textContent = "⋯";
       edit.title = `Edit ${label(e)}`;
       edit.setAttribute("aria-label", `Edit ${label(e)}`);
-      edit.addEventListener("click", () => openEdit(e));
+      edit.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        openEdit(e);
+      });
+      head.append(avatar, names, edit);
 
-      li.append(avatar, names, code, side, edit);
+      const foot = document.createElement("div");
+      foot.className = "tile-foot";
+      const code = document.createElement("span");
+      code.className = "code";
+      foot.append(code);
+      if (e.kind === "totp") {
+        foot.insertAdjacentHTML(
+          "beforeend",
+          '<svg class="ring" viewBox="0 0 24 24" aria-hidden="true">' +
+            '<circle class="ring-bg" cx="12" cy="12" r="9"/>' +
+            '<circle class="ring-fg" cx="12" cy="12" r="9"/></svg>',
+        );
+        foot.querySelector(".ring-fg")!.setAttribute("stroke-dasharray", String(RING));
+      } else {
+        code.textContent = "––– –––";
+        const hint = document.createElement("span");
+        hint.className = "hotp-hint";
+        hint.textContent = "Click for next code";
+        foot.append(hint);
+      }
+      if (e.tags.length) {
+        const tags = document.createElement("span");
+        tags.className = "tags";
+        tags.textContent = e.tags.join(" · ");
+        li.append(head, foot, tags);
+      } else {
+        li.append(head, foot);
+      }
+
+      li.addEventListener("click", () => copy(e, li));
+      li.addEventListener("keydown", (ev) => {
+        if (ev.target === li && (ev.key === "Enter" || ev.key === " ")) {
+          ev.preventDefault();
+          void copy(e, li);
+        }
+      });
       return li;
     }),
   );
@@ -145,7 +190,7 @@ async function tick() {
     return; // locked mid-tick; stopAccounts() cleans up
   }
   for (const c of codes) {
-    const li = document.querySelector<HTMLElement>(`.entry[data-id="${c.id}"]`);
+    const li = document.querySelector<HTMLElement>(`.tile[data-id="${c.id}"]`);
     if (!li) continue;
     const code = li.querySelector<HTMLElement>(".code")!;
     const grouped = groupDigits(c.code);
@@ -153,15 +198,6 @@ async function tick() {
     li.classList.toggle("expiring", c.seconds_remaining <= 5);
     const fg = li.querySelector(".ring-fg");
     fg?.setAttribute("stroke-dashoffset", String(RING * (1 - c.seconds_remaining / c.period)));
-  }
-}
-
-async function nextHotp(id: string, codeEl: HTMLElement) {
-  try {
-    codeEl.textContent = groupDigits(await invoke<string>("hotp_next", { id }));
-  } catch (err) {
-    codeEl.textContent = "error";
-    codeEl.title = errorText(err);
   }
 }
 
