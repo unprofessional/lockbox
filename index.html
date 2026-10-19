@@ -9,8 +9,44 @@
   </head>
 
   <body>
-    <main id="lock-screen" class="lock-screen">
-      <form id="unlock-form" class="unlock-card" autocomplete="off">
+    <main class="screen">
+      <!-- First run: create the vault (BRIEF §6.2) -->
+      <form id="create-form" class="card" autocomplete="off" hidden>
+        <div class="mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="28" height="28">
+            <rect x="5" y="10.5" width="14" height="10" rx="2" />
+            <path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" />
+          </svg>
+        </div>
+        <h1>Create your vault</h1>
+        <p class="lede">Choose a master password. It encrypts everything in lockbox.</p>
+
+        <label class="visually-hidden" for="new-password">Master password</label>
+        <input id="new-password" type="password" placeholder="Master password" spellcheck="false" />
+        <div class="meter" id="strength" data-score="0" aria-hidden="true">
+          <span></span><span></span><span></span><span></span>
+        </div>
+        <p class="meter-label" id="strength-label">At least 8 characters</p>
+
+        <label class="visually-hidden" for="confirm-password">Confirm master password</label>
+        <input id="confirm-password" type="password" placeholder="Confirm password" spellcheck="false" />
+
+        <div class="warning" role="note">
+          <strong>There is no password recovery.</strong>
+          If you forget this password, the vault and every code in it are gone for good.
+          Use encrypted export (coming in M5) as your backup.
+        </div>
+        <label class="check">
+          <input id="ack" type="checkbox" />
+          <span>I understand lost password = lost vault</span>
+        </label>
+
+        <button type="submit" id="create-btn" disabled>Create vault</button>
+        <p id="create-msg" class="msg" role="status" aria-live="polite"></p>
+      </form>
+
+      <!-- Locked -->
+      <form id="unlock-form" class="card" autocomplete="off" hidden>
         <div class="mark" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="28" height="28">
             <rect x="5" y="10.5" width="14" height="10" rx="2" />
@@ -19,16 +55,23 @@
         </div>
         <h1>lockbox</h1>
         <label class="visually-hidden" for="password">Master password</label>
-        <input
-          id="password"
-          type="password"
-          placeholder="Master password"
-          spellcheck="false"
-          autofocus
-        />
-        <button type="submit">Unlock</button>
-        <p id="unlock-msg" class="unlock-msg" role="status" aria-live="polite"></p>
+        <input id="password" type="password" placeholder="Master password" spellcheck="false" />
+        <button type="submit" id="unlock-btn">Unlock</button>
+        <p id="unlock-msg" class="msg" role="status" aria-live="polite"></p>
       </form>
+
+      <!-- Unlocked (placeholder until M3/M4) -->
+      <section id="vault-view" class="card" hidden>
+        <div class="mark open" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="28" height="28">
+            <rect x="5" y="10.5" width="14" height="10" rx="2" />
+            <path d="M8 10.5V8a4 4 0 0 1 7.75-1.4" />
+          </svg>
+        </div>
+        <h1>Vault unlocked</h1>
+        <p class="lede">No accounts yet. Adding codes arrives in M3.</p>
+        <button type="button" id="lock-btn" class="secondary">Lock</button>
+      </section>
     </main>
   </body>
 </html>
