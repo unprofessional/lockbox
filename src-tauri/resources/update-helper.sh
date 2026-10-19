@@ -44,14 +44,16 @@ case "$mode" in
     if [ -z "$installed" ] || ! git -C "$repo" cat-file -e "$installed^{commit}" 2>/dev/null; then
       echo "STATUS unknown-installed"
       range="origin/master"
-    elif [ "$(git -C "$repo" rev-list --count "$installed..origin/master")" -eq 0 ]; then
+    # Merge commits alone bring nothing new (e.g. master merging a develop
+    # this build already contains), so only non-merge commits count.
+    elif [ "$(git -C "$repo" rev-list --count --no-merges "$installed..origin/master")" -eq 0 ]; then
       echo "STATUS up-to-date"
       exit 0
     else
       echo "STATUS available"
       range="$installed..origin/master"
     fi
-    git -C "$repo" log --format='COMMIT %H %s' -n 20 "$range"
+    git -C "$repo" log --no-merges --format='COMMIT %H %s' -n 20 "$range"
     ;;
 
   install)

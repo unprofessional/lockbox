@@ -239,6 +239,38 @@ mod tests {
     }
 
     #[test]
+    fn merge_commit_alone_is_up_to_date() {
+        // master merges a develop the installed build already contains.
+        let (_t, _remote, clone) = repos();
+        commit_and_push(&clone, "first");
+        git(&clone, &["checkout", "-q", "-b", "develop"]);
+        git(&clone, &["commit", "-q", "--allow-empty", "-m", "feature"]);
+        let installed = git(&clone, &["rev-parse", "HEAD"]);
+        git(&clone, &["checkout", "-q", "master"]);
+        git(&clone, &["merge", "-q", "--no-ff", "-m", "Merge develop", "develop"]);
+        git(&clone, &["push", "-q", "origin", "master"]);
+        assert_eq!(
+            check_in(&helper(), &clone, &installed).unwrap().status,
+            Status::UpToDate
+        );
+    }
+
+    #[test]
+    fn merged_new_work_lists_only_real_commits() {
+        let (_t, _remote, clone) = repos();
+        let installed = commit_and_push(&clone, "first");
+        git(&clone, &["checkout", "-q", "-b", "develop"]);
+        git(&clone, &["commit", "-q", "--allow-empty", "-m", "new feature"]);
+        git(&clone, &["checkout", "-q", "master"]);
+        git(&clone, &["merge", "-q", "--no-ff", "-m", "Merge develop", "develop"]);
+        git(&clone, &["push", "-q", "origin", "master"]);
+        let r = check_in(&helper(), &clone, &installed).unwrap();
+        assert_eq!(r.status, Status::Available);
+        let subjects: Vec<_> = r.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects, ["new feature"]);
+    }
+
+    #[test]
     fn check_failure_surfaces_helper_error() {
         let tmp = tempfile::tempdir().unwrap();
         let err = check_in(&helper(), tmp.path(), "abc").unwrap_err();
