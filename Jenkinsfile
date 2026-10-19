@@ -11,6 +11,12 @@
 pipeline {
   agent { label 'macbook' }
 
+  environment {
+    // Makes tauri's bundle_dmg.sh skip its Finder AppleScript layout step,
+    // which times out without Automation permission (no GUI session needed).
+    CI = 'true'
+  }
+
   options {
     disableConcurrentBuilds()
     timestamps()
@@ -56,6 +62,16 @@ pipeline {
         sh label: 'Rust tests', script: '''
           set -eu
           cargo test --manifest-path src-tauri/Cargo.toml --locked
+        '''
+      }
+    }
+
+    stage('Audit') {
+      steps {
+        sh label: 'Surface check + cargo audit', script: '''
+          set -eu
+          sh scripts/check-surface.sh
+          cargo audit --file src-tauri/Cargo.lock
         '''
       }
     }

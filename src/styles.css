@@ -1,0 +1,165 @@
+:root {
+  --bg: #f4f4f6;
+  --surface: #ffffff;
+  --border: #d9d9e0;
+  --text: #1b1b22;
+  --muted: #6b6b78;
+  --accent: #d6324a;
+  --accent-text: #ffffff;
+  --focus: rgba(214, 50, 74, 0.35);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15151a;
+    --surface: #1f1f26;
+    --border: #33333d;
+    --text: #ececf1;
+    --muted: #8e8e9b;
+    --accent: #ec4d63;
+    --focus: rgba(236, 77, 99, 0.4);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #15151a;
+  --surface: #1f1f26;
+  --border: #33333d;
+  --text: #ececf1;
+  --muted: #8e8e9b;
+  --accent: #ec4d63;
+  --focus: rgba(236, 77, 99, 0.4);
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.lock-screen {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 16px;
+}
+
+.unlock-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  width: 100%;
+  max-width: 300px;
+  text-align: center;
+}
+
+.mark {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 4px;
+  border-radius: 14px;
+  background: var(--accent);
+}
+
+.mark svg {
+  fill: none;
+  stroke: var(--accent-text);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+input,
+button {
+  font: inherit;
+  height: 36px;
+  border-radius: 8px;
+}
+
+input {
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+input:focus,
+button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus);
+  border-color: var(--accent);
+}
+
+button {
+  border: none;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:active {
+  filter: brightness(0.92);
+}
+
+.unlock-msg {
+  min-height: 1.4em;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.shake {
+  animation: shake 0.35s ease;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-8px); }
+  40% { transform: translateX(7px); }
+  60% { transform: translateX(-5px); }
+  80% { transform: translateX(3px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shake {
+    animation: none;
+  }
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

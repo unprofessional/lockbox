@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The whole IPC surface the main window may call (BRIEF §8). No core plugins, no fs/http/shell.",
+  "windows": ["main"],
+  "permissions": [
+    "allow-is-locked",
+    "allow-settings-get",
+    "allow-settings-set"
+  ]
+}
