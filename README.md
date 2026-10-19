@@ -37,6 +37,16 @@ Right now you can create a vault, lock it and unlock it. There's no way to add a
 - Being forced to type your password.
 - Forgetting your password. **There is no recovery.** Lose the password and you lose the vault. Keep an encrypted export (M5) as your backup.
 
+**Desktop automation agents.** AI agents that you grant Screen Recording and Accessibility permission can take screenshots of your desktop, read on-screen text through macOS accessibility, and click and type. Treat them like a tireless person looking over your shoulder.
+
+- **Screenshots:** hiding the window from screen capture (M6) blanks lockbox in screenshots.
+- **Unlock guessing:** a backoff on wrong passwords (M6) slows guessing through the unlock screen. It can't stop someone who quits and relaunches the app, and it does nothing against an attacker who has a copy of `vault.enc`. Against that attacker, Argon2id and a strong password are what count.
+- **Not covered yet:**
+  - Codes on screen are still readable through accessibility while the vault is unlocked.
+  - An agent could click a tile to copy a code.
+- **What would close the gap:** Touch ID (planned for v1.1). Synthetic clicks and keystrokes can't fake a fingerprint.
+- **Your own control:** be deliberate about which apps hold Screen Recording and Accessibility permission.
+
 ## Requirements
 
 - macOS 12 or later. Developed and tested on macOS 13.7.8 (Ventura).

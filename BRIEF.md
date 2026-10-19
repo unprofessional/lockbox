@@ -122,6 +122,16 @@ Nothing else. No `fs` plugin, no `shell` plugin, no `http` plugin in `Cargo.toml
 
 Paranoid extras (cheap, do them): `NSWindowSharingNone` so the window is excluded from screen capture APIs; zeroize on lock; optional "panic" hotkey that locks immediately.
 
+**Desktop automation agents (future-proofing).** Assume AI agents with Screen Recording + Accessibility grants may drive this desktop: screenshot it, read UI text through the accessibility tree, click and type. They are a tireless shoulder-surfer. Mapping:
+
+- Screenshots → `NSWindowSharingNone` (M6) blanks the window in capture APIs.
+- Accessibility tree → **gap.** Webview text (codes, issuers) is exposed to AX clients even when capture is blocked. Rendering codes non-textually would hide them from agents *and* VoiceOver — decide in M6.
+- Unlock guessing → Rust-side unlock backoff (M6). Matters more for agents than humans.
+- Click-to-copy while unlocked → limited by auto-lock and clipboard wipe; only a presence check (Touch ID) actually stops it.
+- Quit/relaunch to reset backoff → not enforceable by the app (any persisted counter is editable by the same user). Document, don't pretend.
+
+Touch ID is the strongest control here: biometric presence is the one thing synthetic input can't produce. That raises the priority of §6.3 and of an optional "Touch ID to copy" setting.
+
 ## 10. UI spec (Authy-desktop-shaped)
 
 - **Unlock screen:** password field, unlock button, subtle error shake. Nothing else.
@@ -137,7 +147,7 @@ Paranoid extras (cheap, do them): `NSWindowSharingNone` so the window is exclude
 3. **M3 — codes:** entry CRUD (manual + URI paste), `totp-rs` generation, countdown, IPC surface from §8, zeroize discipline. Gate: add a known test vector entry (RFC 6238 vectors), code matches `oathtool` output.
 4. **M4 — UI parity pass:** tile grid, search, copy + clipboard wipe, add-entry sheet, toasts, dark/light. Gate: side-by-side with Authy desktop screenshots feels familiar to mads.
 5. **M5 — QR image import + encrypted export/import.** Gate: screenshot a real enrollment QR, import it, code matches phone authenticator; export → delete vault → import → identical entries.
-6. **M6 — hardening & polish:** auto-lock timers, panic hotkey, NSWindowSharingNone, first-run wizard copy, README with threat model, ad-hoc signing script, release `.dmg` from the Jenkins pipeline. Gate: mads daily-drives it for a week with real (low-stakes first) tokens.
+6. **M6 — hardening & polish:** auto-lock timers, panic hotkey, NSWindowSharingNone, unlock backoff (enforced in Rust, in-memory, resets on success: 5 free attempts then 1s doubling to a ~30s cap; `unlock` returns the remaining wait; `change_password`'s old-password check shares it), decision on accessibility exposure of codes (§9 agents), first-run wizard copy, README with threat model, ad-hoc signing script, release `.dmg` from the Jenkins pipeline. Gate: mads daily-drives it for a week with real (low-stakes first) tokens.
 
 Suggested rollout for real tokens: start by importing a burner/low-stakes account, keep phone authenticator as fallback until trust is earned.
 
@@ -155,6 +165,7 @@ Suggested rollout for real tokens: start by importing a burner/low-stakes accoun
 3. Touch ID unlock: v1 or v1.1? (brief assumes v1.1; envelope designed for it either way)
 4. Webcam QR scanning: wanted at all, or is screenshot/file import enough? (brief assumes file/image import suffices)
 5. Repo location + visibility: private GitHub under which account (unprofessional? moldy-devcru?), or local-only git?
+6. Desktop agents (§9): pull Touch ID unlock forward from v1.1? Add an optional "require Touch ID to copy a code" setting? Hide codes from the accessibility tree at the cost of VoiceOver support?
 
 ## 14. Dispatch notes (for whoever runs Codex)
 
