@@ -9,8 +9,44 @@
   </head>
 
   <body>
-    <main id="lock-screen" class="lock-screen">
-      <form id="unlock-form" class="unlock-card" autocomplete="off">
+    <main class="screen">
+      <!-- First run: create the vault (BRIEF §6.2) -->
+      <form id="create-form" class="card" autocomplete="off" hidden>
+        <div class="mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="28" height="28">
+            <rect x="5" y="10.5" width="14" height="10" rx="2" />
+            <path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" />
+          </svg>
+        </div>
+        <h1>Create your vault</h1>
+        <p class="lede">Choose a master password. It encrypts everything in lockbox.</p>
+
+        <label class="visually-hidden" for="new-password">Master password</label>
+        <input id="new-password" type="password" placeholder="Master password" spellcheck="false" />
+        <div class="meter" id="strength" data-score="0" aria-hidden="true">
+          <span></span><span></span><span></span><span></span>
+        </div>
+        <p class="meter-label" id="strength-label">At least 8 characters</p>
+
+        <label class="visually-hidden" for="confirm-password">Confirm master password</label>
+        <input id="confirm-password" type="password" placeholder="Confirm password" spellcheck="false" />
+
+        <div class="warning" role="note">
+          <strong>There is no password recovery.</strong>
+          If you forget this password, the vault and every code in it are gone for good.
+          Use encrypted export (coming in M5) as your backup.
+        </div>
+        <label class="check">
+          <input id="ack" type="checkbox" />
+          <span>I understand lost password = lost vault</span>
+        </label>
+
+        <button type="submit" id="create-btn" disabled>Create vault</button>
+        <p id="create-msg" class="msg" role="status" aria-live="polite"></p>
+      </form>
+
+      <!-- Locked -->
+      <form id="unlock-form" class="card" autocomplete="off" hidden>
         <div class="mark" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="28" height="28">
             <rect x="5" y="10.5" width="14" height="10" rx="2" />
@@ -19,16 +55,127 @@
         </div>
         <h1>lockbox</h1>
         <label class="visually-hidden" for="password">Master password</label>
-        <input
-          id="password"
-          type="password"
-          placeholder="Master password"
-          spellcheck="false"
-          autofocus
-        />
-        <button type="submit">Unlock</button>
-        <p id="unlock-msg" class="unlock-msg" role="status" aria-live="polite"></p>
+        <input id="password" type="password" placeholder="Master password" spellcheck="false" />
+        <button type="submit" id="unlock-btn">Unlock</button>
+        <p id="unlock-msg" class="msg" role="status" aria-live="polite"></p>
       </form>
+
+      <!-- Unlocked: accounts and codes (M3; tile grid polish in M4) -->
+      <section id="vault-view" class="vault" hidden>
+        <header class="topbar">
+          <label class="visually-hidden" for="search">Search accounts</label>
+          <input id="search" type="search" placeholder="Search" spellcheck="false" />
+          <button type="button" id="add-btn" title="Add an account">+ Add</button>
+          <button type="button" id="lock-btn" class="secondary" title="Lock the vault">Lock</button>
+        </header>
+
+        <p id="empty" class="empty" hidden>No accounts yet. Use <strong>+ Add</strong> to add your first one.</p>
+        <p id="no-matches" class="empty" hidden>No accounts match your search.</p>
+        <ul id="entries" class="entries"></ul>
+
+        <footer class="update">
+          <p class="build" id="build-info"></p>
+          <button type="button" id="update-check" class="link">Check for updates</button>
+          <p id="update-msg" class="msg" role="status" aria-live="polite"></p>
+          <pre id="update-error" class="update-error" hidden></pre>
+
+          <form id="update-form" class="update-form" autocomplete="off" hidden>
+            <ul id="update-commits" class="commits"></ul>
+            <label class="visually-hidden" for="update-password">Master password</label>
+            <input
+              id="update-password"
+              type="password"
+              placeholder="Master password to install"
+              spellcheck="false"
+            />
+            <button type="submit" id="update-install">Update now</button>
+            <p class="hint">Builds master on this Mac, then restarts lockbox. Takes a minute or two.</p>
+          </form>
+        </footer>
+      </section>
+
+      <!-- Add account: input step, then preview step -->
+      <dialog id="add-dialog" class="sheet">
+        <form id="add-input" autocomplete="off">
+          <h2>Add account</h2>
+          <div class="tabs" role="tablist">
+            <button type="button" role="tab" id="tab-uri" class="tab" aria-selected="true">Paste link</button>
+            <button type="button" role="tab" id="tab-manual" class="tab" aria-selected="false">Enter manually</button>
+          </div>
+
+          <div id="pane-uri">
+            <label class="field">
+              <span>otpauth:// link</span>
+              <textarea id="uri" rows="3" spellcheck="false" placeholder="otpauth://totp/Service:you@example.com?secret=…"></textarea>
+            </label>
+            <p class="hint">Most sites show this link under the QR code as "can't scan?" or "enter key manually". QR images arrive in M5.</p>
+          </div>
+
+          <div id="pane-manual" hidden>
+            <label class="field"><span>Issuer</span><input id="m-issuer" placeholder="GitHub" spellcheck="false" /></label>
+            <label class="field"><span>Account</span><input id="m-account" placeholder="you@example.com" spellcheck="false" /></label>
+            <label class="field"><span>Secret key</span><input id="m-seed" placeholder="JBSW Y3DP EHPK 3PXP" spellcheck="false" autocapitalize="characters" /></label>
+            <details>
+              <summary>Advanced</summary>
+              <div class="row">
+                <label class="field"><span>Type</span>
+                  <select id="m-kind"><option value="totp">Time-based</option><option value="hotp">Counter-based</option></select>
+                </label>
+                <label class="field"><span>Digits</span>
+                  <select id="m-digits"><option>6</option><option>7</option><option>8</option></select>
+                </label>
+              </div>
+              <div class="row">
+                <label class="field"><span>Algorithm</span>
+                  <select id="m-algo"><option>SHA1</option><option>SHA256</option><option>SHA512</option></select>
+                </label>
+                <label class="field" id="m-period-field"><span>Period (s)</span><input id="m-period" type="number" min="10" max="300" value="30" /></label>
+                <label class="field" id="m-counter-field" hidden><span>Counter</span><input id="m-counter" type="number" min="0" value="0" /></label>
+              </div>
+            </details>
+          </div>
+
+          <p id="add-error" class="form-error" role="alert"></p>
+          <div class="actions">
+            <button type="button" class="secondary" data-close>Cancel</button>
+            <button type="submit">Continue</button>
+          </div>
+        </form>
+
+        <form id="add-preview" hidden>
+          <h2>Add this account?</h2>
+          <dl class="preview">
+            <dt>Issuer</dt><dd id="p-issuer"></dd>
+            <dt>Account</dt><dd id="p-account"></dd>
+            <dt>Code</dt><dd id="p-format"></dd>
+          </dl>
+          <p id="p-duplicate" class="warning" hidden></p>
+          <p id="confirm-error" class="form-error" role="alert"></p>
+          <div class="actions">
+            <button type="button" class="secondary" id="preview-back">Back</button>
+            <button type="submit" id="confirm-btn">Add account</button>
+          </div>
+        </form>
+      </dialog>
+
+      <!-- Edit account -->
+      <dialog id="edit-dialog" class="sheet">
+        <form id="edit-form" autocomplete="off">
+          <h2>Edit account</h2>
+          <label class="field"><span>Issuer</span><input id="e-issuer" spellcheck="false" /></label>
+          <label class="field"><span>Account</span><input id="e-account" spellcheck="false" /></label>
+          <label class="field"><span>Tags</span><input id="e-tags" placeholder="work, personal" spellcheck="false" /></label>
+          <p class="hint">To change the secret, delete this account and add it again.</p>
+          <p id="edit-error" class="form-error" role="alert"></p>
+          <div class="actions spread">
+            <button type="button" class="danger" id="delete-btn">Delete…</button>
+            <span>
+              <button type="button" class="secondary" data-close>Cancel</button>
+              <button type="submit">Save</button>
+            </span>
+          </div>
+        </form>
+      </dialog>
     </main>
   </body>
 </html>

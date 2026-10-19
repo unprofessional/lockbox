@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-entry-confirm"
+description = "Enables the entry_confirm command without any pre-configured scope."
+commands.allow = ["entry_confirm"]
+
+[[permission]]
+identifier = "deny-entry-confirm"
+description = "Denies the entry_confirm command without any pre-configured scope."
+commands.deny = ["entry_confirm"]

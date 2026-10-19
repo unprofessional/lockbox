@@ -11,8 +11,9 @@ A single-user, offline, local-only TOTP/HOTP authenticator desktop app for macOS
 
 ## 2. Non-goals (hard scope boundaries)
 
-- **No distribution.** No notarization, no Developer ID, no autoupdater, no publishing anywhere. The build artifact is an unsigned/ad-hoc-signed `.dmg` (`tauri build --bundles dmg`) produced by the `Jenkinsfile` on mads's MacBook (`macbook` agent) and installed on that same machine only — that is the test loop. Ad-hoc codesign if Gatekeeper ever complains.
+- **No distribution.** No notarization, no Developer ID, no publishing anywhere. No autoupdater in the usual sense either: see the in-app updater note below. The app is built and installed on mads's MacBook only: `npm run release` runs every gate, builds an ad-hoc-signed `.app`, and installs it to `/Applications` as the production app (`--dmg` also keeps a `.dmg`). No CI server builds it — a Jenkins agent on the laptop would let the controller run code as mads on the machine holding the vault. Ad-hoc codesign if Gatekeeper ever complains.
 - **No networking of any kind.** No HTTP plugin, no websocket, no telemetry, no update check. Enforced structurally (absent deps) and by CSP.
+- **In-app updater (decided 2026-10-19).** The app still contains no network code. An unlocked session can press "Check for updates", which runs the one helper script bundled in the app (`update-helper.sh`, fixed modes `check`/`install`, no webview-supplied arguments). git does the fetch of `master`. "Update now" also requires re-entering the master password, then builds `master` in a dedicated worktree via `scripts/release.sh` and relaunches. `std::process` use is confined to `src/update.rs` by the surface check.
 - **No cloud sync, no accounts, no multi-device.** One vault file on one machine.
 - **No Steam Guard / vendor-specific extensions** in v1 (nice-to-have later; the `totp` crate ecosystem has support).
 - **Not hardened against active local malware** (see §9 threat model). We make it _hard_, not magic.
@@ -99,18 +100,31 @@ unlock(password) -> bool
 lock()
 is_locked() -> bool
 create_vault(password) -> bool
-list_entries() -> [{id, issuer, account, digits, period, kind, tags}]   // NO seeds
-get_code(id) -> {code, seconds_remaining}   // or hotp counter value
-add_entry_uri(uri) -> preview/confirm two-step
-add_entry_manual(form) -> id
-edit_entry(id, meta) -> ok        // metadata only; re-keying seed = delete+add in v1
-delete_entry(id) -> ok            // with confirm
-search(query) -> filtered list
-copy_code(id) -> ok               // Rust writes clipboard + schedules 30s wipe
+vault_exists() -> bool                    // first-run wizard vs unlock screen
+list_entries() -> [{id, issuer, account, digits, period, algorithm, kind, tags}]   // NO seeds
+get_codes() -> [{id, code, seconds_remaining, period}]   // all TOTP codes at one instant
+hotp_next(id) -> code             // returns code for stored counter, then advances + saves it
+entry_preview_uri(uri) -> preview{token, …, duplicate}   // step 1; nothing saved
+entry_preview_manual(form) -> preview                    // step 1; nothing saved
+entry_confirm(token, replace) -> id                      // step 2; duplicate refused unless replace
+edit_entry(id, issuer, account, tags) -> ok   // metadata only; re-keying seed = delete+add in v1
+delete_entry(id) -> ok            // UI asks for a second click
+copy_code(id) -> ok               // M4: Rust writes clipboard + schedules 30s wipe
 change_password(old, new) -> ok   // re-encrypt payload
 export_encrypted(path, password) / import_encrypted(path, password)
 settings_get() / settings_set()   // auto-lock minutes, copy-wipe seconds, theme
+app_info() -> {version, commit, dirty}          // allowed while locked
+update_check() -> {status, latest, commits[]}   // unlocked only; runs bundled helper `check`
+update_install(password)                        // unlocked + password re-check; runs helper `install`
 ```
+
+M3 deviations from the original list, on purpose:
+
+- `get_codes()` replaces per-entry `get_code(id)`: one call per second for the whole list, all codes from the same instant.
+- Adding is always preview → confirm through a one-time token; the parsed seed waits in Rust (cleared on lock), never in the webview.
+- `search(query)` was dropped: filtering issuer/account/tags happens in the webview, which already holds that metadata. Seeds aren't searchable anyway.
+- `otpauth://` parsing is a small in-house parser (`src/otp.rs`) rather than totp-rs's `otpauth` feature, because that feature rejects HOTP links and pulls in the `url` crate. totp-rs (no default features; `std`, `zeroize`) does the code generation for both TOTP and HOTP.
+- Secrets must decode to at least 80 bits. RFC 4226 asks for 128, but many real services still issue 80-bit seeds.
 
 Nothing else. No `fs` plugin, no `shell` plugin, no `http` plugin in `Cargo.toml`/capabilities at all. `tauri.conf.json`: `"csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' asset:"`. Devtools disabled in release profile.
 
@@ -121,6 +135,18 @@ Nothing else. No `fs` plugin, no `shell` plugin, no `http` plugin in `Cargo.toml
 **Does NOT defend against:** active malware running as mads while unlocked (it can read memory or screenshot — same as Authy, 1Password, anything), keyloggers, coerced password entry, Time Machine snapshots of an _unlocked-in-memory_ state (at-rest file is still safe), and mads forgetting the password. State this in the README, not buried.
 
 Paranoid extras (cheap, do them): `NSWindowSharingNone` so the window is excluded from screen capture APIs; zeroize on lock; optional "panic" hotkey that locks immediately.
+
+**Desktop automation agents (future-proofing).** Assume AI agents with Screen Recording + Accessibility grants may drive this desktop: screenshot it, read UI text through the accessibility tree, click and type. They are a tireless shoulder-surfer. Mapping:
+
+- Screenshots → `NSWindowSharingNone` (M6) blanks the window in capture APIs.
+- Accessibility tree → **gap.** Webview text (codes, issuers) is exposed to AX clients even when capture is blocked. Rendering codes non-textually would hide them from agents *and* VoiceOver — decide in M6.
+- Unlock guessing → Rust-side unlock backoff (M6). Matters more for agents than humans.
+- Click-to-copy while unlocked → limited by auto-lock and clipboard wipe; only a presence check (Touch ID) actually stops it.
+- Quit/relaunch to reset backoff → not enforceable by the app (any persisted counter is editable by the same user). Document, don't pretend.
+
+In-app updater → an unlocked session can trigger a build of `master`; installing also requires re-entering the master password, so a desktop agent can't install code with clicks alone while the vault is unlocked. Whoever can push to `master` on GitHub can ship code to this laptop the next time mads updates, so treat push access to `master` as access to the vault.
+
+Touch ID is the strongest control here: biometric presence is the one thing synthetic input can't produce. That raises the priority of §6.3 and of an optional "Touch ID to copy" setting.
 
 ## 10. UI spec (Authy-desktop-shaped)
 
@@ -137,7 +163,7 @@ Paranoid extras (cheap, do them): `NSWindowSharingNone` so the window is exclude
 3. **M3 — codes:** entry CRUD (manual + URI paste), `totp-rs` generation, countdown, IPC surface from §8, zeroize discipline. Gate: add a known test vector entry (RFC 6238 vectors), code matches `oathtool` output.
 4. **M4 — UI parity pass:** tile grid, search, copy + clipboard wipe, add-entry sheet, toasts, dark/light. Gate: side-by-side with Authy desktop screenshots feels familiar to mads.
 5. **M5 — QR image import + encrypted export/import.** Gate: screenshot a real enrollment QR, import it, code matches phone authenticator; export → delete vault → import → identical entries.
-6. **M6 — hardening & polish:** auto-lock timers, panic hotkey, NSWindowSharingNone, first-run wizard copy, README with threat model, ad-hoc signing script, release `.dmg` from the Jenkins pipeline. Gate: mads daily-drives it for a week with real (low-stakes first) tokens.
+6. **M6 — hardening & polish:** auto-lock timers, panic hotkey, NSWindowSharingNone, unlock backoff (enforced in Rust, in-memory, resets on success: 5 free attempts then 1s doubling to a ~30s cap; `unlock` returns the remaining wait; `change_password`'s old-password check shares it), decision on accessibility exposure of codes (§9 agents), first-run wizard copy, README with threat model. Gate: mads daily-drives it for a week with real (low-stakes first) tokens.
 
 Suggested rollout for real tokens: start by importing a burner/low-stakes account, keep phone authenticator as fallback until trust is earned.
 
@@ -155,6 +181,7 @@ Suggested rollout for real tokens: start by importing a burner/low-stakes accoun
 3. Touch ID unlock: v1 or v1.1? (brief assumes v1.1; envelope designed for it either way)
 4. Webcam QR scanning: wanted at all, or is screenshot/file import enough? (brief assumes file/image import suffices)
 5. Repo location + visibility: private GitHub under which account (unprofessional? moldy-devcru?), or local-only git?
+6. Desktop agents (§9): pull Touch ID unlock forward from v1.1? Add an optional "require Touch ID to copy a code" setting? Hide codes from the accessibility tree at the cost of VoiceOver support?
 
 ## 14. Dispatch notes (for whoever runs Codex)
 
@@ -162,4 +189,4 @@ Suggested rollout for real tokens: start by importing a burner/low-stakes accoun
 - Do NOT let the agent add tauri plugins beyond the clipboard one (and stronghold/keychain only at M6 if Touch ID is greenlit). Plugin creep = network/filesystem surface creep; this app's whole selling point is structural paranoia.
 - Any PR touching `tauri.conf.json` CSP or `Cargo.toml` deps gets human eyes, no exceptions.
 - Target Ventura: pin `minimumSystemVersion: "12.0"` and test-build on the actual laptop, not CI assumptions.
-- CI = `Jenkinsfile` on the `macbook` agent (the laptop itself): `npm ci` → `cargo test` → `tauri build --bundles dmg` → archived `.dmg`. Hand-testing a milestone means installing that `.dmg` and running it; keep the pipeline green from M1 on.
+- Release loop = `npm run release` on the MacBook (`scripts/release.sh`): `cargo test` → surface check → `cargo audit` → `tauri build` → install to `/Applications` → relaunch. Nothing installs unless every gate passes. Hand-testing a milestone means running that and using the installed app. (Jenkins was dropped: no Mac build agent, and making the laptop one conflicts with §9.)
