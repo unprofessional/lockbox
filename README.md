@@ -15,7 +15,7 @@ The full plan, scope and milestones are in [BRIEF.md](BRIEF.md).
 | M3 | Codes: add entries (manual, `otpauth://` paste), TOTP/HOTP generation | done |
 | M4 | UI parity: tile grid, copy with clipboard wipe, settings | in review |
 | M5 | QR image import, encrypted export/import | next |
-| M6 | Hardening: auto-lock, panic hotkey, screen-capture exclusion | |
+| M6 | Hardening: lock on sleep/hide, unlock backoff, panic hotkey, screen-capture exclusion | |
 
 Right now you can create a vault and add accounts, either by pasting an `otpauth://` link or by typing the secret. Accounts show as a tile grid with live codes, for both time-based and counter-based accounts. Click a tile to copy its code. You can search, and edit or delete accounts. Settings cover the theme, lock after inactivity, how long copied codes stay on the clipboard, changing the master password, and checking for updates.
 
@@ -26,8 +26,8 @@ Shortcuts: ⌘N add, ⌘F search, ⌘, settings, ⌘L lock.
 **Protects against:**
 
 - A stolen laptop or lost disk: the vault is encrypted at rest.
-- Shoulder-surfing: auto-lock (M6), and codes are hidden until you unlock.
-- Clipboard sniffers: copied codes are wiped after a timeout (M4).
+- Shoulder-surfing: codes are hidden until you unlock, and lockbox locks itself after a set time without activity. Locking on sleep and when the window is hidden comes in M6.
+- Clipboard snooping: copied codes are wiped after a timeout, kept out of clipboard-manager history, and never synced to other devices through Universal Clipboard.
 - A compromised webview: no secret crosses IPC; the webview only gets codes for the current 30-second window.
 - Leaked backups: exports are encrypted by default (M5).
 - Accidental network exfiltration: there is no networking code to exfiltrate with (see [Security surface](#security-surface)).
@@ -100,7 +100,7 @@ Options:
 
 ### Updating from inside the app
 
-When the vault is unlocked, **Check for updates** compares the installed build with `master` on GitHub and lists any new commits. **Update now** asks for your master password again, then builds `master` and installs it with the same checks as `npm run release`, and lockbox restarts. If the build or any check fails, nothing is installed and the error appears in the app. The full log is in `~/Library/Logs/lockbox/update.log`.
+In **Settings → About** (⌘,), **Check for updates** compares the installed build with `master` on GitHub and lists any new commits. **Update now** asks for your master password again, then builds `master` and installs it with the same checks as `npm run release`, and lockbox restarts. If the build or any check fails, nothing is installed and the error appears in the app. The full log is in `~/Library/Logs/lockbox/update.log`.
 
 The app itself still has no network code. Both buttons run a single helper script bundled inside the app ([update-helper.sh](src-tauri/resources/update-helper.sh)), with fixed modes the webview can't change. git does the fetching. The helper builds in its own copy of the repo at `~/Library/Caches/lockbox/release` (a git worktree), so it never disturbs whatever branch you have checked out. The first update takes a few minutes; later ones reuse the build cache.
 
