@@ -3,6 +3,7 @@ mod clipboard;
 mod otp;
 mod panel;
 mod qr;
+mod secure_enclave;
 mod settings;
 mod system;
 mod update;
@@ -116,6 +117,8 @@ struct UnlockOutcome {
     problem: Option<String>,
     /// `problem` is one that restoring vault.enc.bak may fix.
     can_restore: bool,
+    /// Touch ID unlock didn't work (not shown for a cancelled prompt).
+    touch_id_error: Option<String>,
 }
 
 const TOO_MANY: &str = "Too many wrong passwords.";
@@ -271,9 +274,24 @@ async fn change_password(
     let (old, new) = (Zeroizing::new(old), Zeroizing::new(new));
     let mut guard = state.vault.lock().unwrap();
     let vault = guard.as_mut().ok_or(LOCKED)?;
+    let touch_id = vault.biometric_material();
     match guarded_check(&state, || vault.change_password(&old, &new)) {
         Err(wait) => Err(wait_message(wait)),
-        Ok(Ok(())) => Ok(true),
+        Ok(Ok(())) => {
+            // The re-key dropped the Touch ID wrap of the old vault key;
+            // seal the new key to the same Secure Enclave key (no prompt).
+            if let Some((se_key, se_public, _)) = touch_id {
+                let rewrapped = secure_enclave::wrap_key(&se_public)
+                    .map_err(|e| e.to_string())
+                    .and_then(|(eph, wrap)| {
+                        vault.set_biometric(&se_key, &se_public, &eph, &wrap).map_err(|e| e.to_string())
+                    });
+                if let Err(e) = rewrapped {
+                    eprintln!("lockbox: Touch ID turned off after password change: {e}");
+                }
+            }
+            Ok(true)
+        }
         Ok(Err(VaultError::WrongPassword)) => Ok(false),
         Ok(Err(e)) => Err(e.to_string()),
     }
@@ -332,6 +350,13 @@ struct Copied {
 /// The webview has no clipboard access of its own.
 #[tauri::command]
 async fn copy_code(state: State<'_, AppState>, id: String) -> Result<Copied, String> {
+    // Optional Touch ID gate (M6.1). The vault lock is released while the
+    // prompt waits, so codes keep updating.
+    let gate = state.settings.lock().unwrap().touch_id_to_copy;
+    let material = with_vault(&state, |v| Ok(v.biometric_material()))?;
+    if let (true, Some((se_key, _, ephemeral))) = (gate, material) {
+        secure_enclave::unwrap_key(&se_key, &ephemeral, "copy a code").map_err(|e| e.to_string())?;
+    }
     let t = now();
     let code = with_vault(&state, |v| {
         let e = v.entries().iter().find(|e| e.id == id).ok_or(VaultError::NoSuchEntry)?;
@@ -566,6 +591,97 @@ async fn import_confirm(
     Ok(summary)
 }
 
+// ---- Touch ID (M6.1, BRIEF §6.3) ----
+
+#[derive(Serialize)]
+struct TouchIdStatus {
+    /// This Mac has a Secure Enclave and an enrolled fingerprint.
+    available: bool,
+    /// The vault on disk has Touch ID unlock set up.
+    enabled: bool,
+}
+
+/// Allowed while locked: the lock screen decides whether to offer Touch ID.
+#[tauri::command]
+fn touch_id_status(state: State<'_, AppState>) -> TouchIdStatus {
+    TouchIdStatus {
+        available: secure_enclave::available(),
+        enabled: Vault::has_biometric(&state.vault_path),
+    }
+}
+
+/// Unlocks with a fingerprint: the Secure Enclave re-derives the key that
+/// seals the vault key. The master password always works too. Touch ID
+/// failures don't count towards the password backoff; macOS limits them.
+#[tauri::command]
+async fn unlock_touch_id(state: State<'_, AppState>) -> Result<UnlockOutcome, String> {
+    let result = Vault::unlock_biometric(&state.vault_path, |se_key, ephemeral| {
+        secure_enclave::unwrap_key(se_key, ephemeral, "unlock lockbox").map_err(|e| match e {
+            secure_enclave::SeError::Cancelled => String::new(),
+            e => e.to_string(),
+        })
+    });
+    match result {
+        Ok(vault) => {
+            *state.vault.lock().unwrap() = Some(vault);
+            state.backoff.lock().unwrap().record_success();
+            Ok(UnlockOutcome {
+                unlocked: true,
+                ..Default::default()
+            })
+        }
+        Err(VaultError::Biometric(msg)) => Ok(UnlockOutcome {
+            touch_id_error: (!msg.is_empty()).then_some(msg),
+            ..Default::default()
+        }),
+        // Damaged files are reported through the password path's recovery.
+        Err(e) => Ok(UnlockOutcome {
+            touch_id_error: Some(format!("{e}. Use your master password.")),
+            ..Default::default()
+        }),
+    }
+}
+
+/// Turns on Touch ID unlock: re-checks the master password, creates a
+/// fingerprint-gated Secure Enclave key, proves a fingerprint works with it,
+/// then seals the vault key to it. Re-running replaces the previous setup.
+#[tauri::command]
+async fn touch_id_enable(state: State<'_, AppState>, password: String) -> Result<(), String> {
+    let password = Zeroizing::new(password);
+    {
+        let guard = state.vault.lock().unwrap();
+        let vault = guard.as_ref().ok_or(LOCKED)?;
+        check_master(&state, vault, &password)?;
+    }
+    if !secure_enclave::available() {
+        return Err(secure_enclave::SeError::Unavailable.to_string());
+    }
+    // Vault lock released while the prompt waits.
+    let (se_key, se_public) = secure_enclave::create_key().map_err(|e| e.to_string())?;
+    let (ephemeral, wrap) = secure_enclave::wrap_key(&se_public).map_err(|e| e.to_string())?;
+    let proof = secure_enclave::unwrap_key(&se_key, &ephemeral, "turn on Touch ID for lockbox")
+        .map_err(|e| match e {
+            secure_enclave::SeError::Cancelled => "Touch ID wasn't turned on.".to_string(),
+            e => e.to_string(),
+        })?;
+    if *proof != *wrap {
+        return Err("Touch ID check didn't match. Touch ID wasn't turned on.".into());
+    }
+    with_vault(&state, |v| v.set_biometric(&se_key, &se_public, &ephemeral, &wrap))
+}
+
+/// Turns Touch ID unlock off (and with it the Touch ID copy gate).
+#[tauri::command]
+async fn touch_id_disable(state: State<'_, AppState>) -> Result<(), String> {
+    with_vault(&state, |v| v.clear_biometric())?;
+    let mut settings = state.settings.lock().unwrap();
+    if settings.touch_id_to_copy {
+        settings.touch_id_to_copy = false;
+        settings::save(&state.settings_path, &settings).map_err(|e| format!("could not save settings: {e}"))?;
+    }
+    Ok(())
+}
+
 // ---- settings ----
 
 /// Allowed while locked: the lock screen needs the theme, and settings hold
@@ -680,6 +796,10 @@ pub fn run() {
             create_vault,
             unlock,
             restore_backup,
+            touch_id_status,
+            unlock_touch_id,
+            touch_id_enable,
+            touch_id_disable,
             lock,
             change_password,
             list_entries,
@@ -728,6 +848,8 @@ mod contract_tests {
         "create_vault",
         "unlock",
         "restore_backup",
+        "touch_id_status",
+        "unlock_touch_id",
         "lock",
         "settings_get",
         "app_info",
@@ -748,6 +870,8 @@ mod contract_tests {
         "export_backup",
         "import_stage",
         "import_confirm",
+        "touch_id_enable",
+        "touch_id_disable",
         "settings_set",
         "update_check",
         "update_install",
@@ -820,6 +944,8 @@ mod contract_tests {
         locked("export_backup", block_on(export_backup(app.handle().clone(), s(), pw())));
         locked("import_stage", stage_import_bytes(&s(), b"{}".to_vec()));
         locked("import_confirm", block_on(import_confirm(s(), "t".into(), pw())));
+        locked("touch_id_enable", block_on(touch_id_enable(s(), pw())));
+        locked("touch_id_disable", block_on(touch_id_disable(s())));
         locked(
             "edit_entry",
             block_on(edit_entry(s(), "x".into(), "a".into(), "b".into(), vec![])),
@@ -828,7 +954,7 @@ mod contract_tests {
         locked("settings_set", settings_set(s(), Settings::default()));
         locked("update_check", block_on(update_check(s())));
         locked("update_install", block_on(update_install(s(), pw())));
-        assert_eq!(GUARDED.len(), 17, "exercise every GUARDED command above");
+        assert_eq!(GUARDED.len(), 19, "exercise every GUARDED command above");
     }
 
     #[test]
@@ -964,6 +1090,9 @@ mod contract_tests {
         let s = || app.state::<AppState>();
         assert!(is_locked(s()));
         assert!(!block_on(vault_exists(s())).unwrap());
+        assert!(!touch_id_status(s()).enabled);
+        let o = block_on(unlock_touch_id(s())).unwrap();
+        assert!(!o.unlocked && o.touch_id_error.is_some(), "no vault, no Touch ID");
         let _ = settings_get(s());
         let _ = app_info(app.handle().clone());
         lock(s());

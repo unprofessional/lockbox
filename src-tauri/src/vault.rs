@@ -35,6 +35,8 @@ const SALT_LEN: usize = 16;
 // Domain-separate the two GCM layers so one ciphertext can't stand in for the other.
 const AAD_KEY_WRAP: &[u8] = b"lockbox/v1/key-wrap";
 const AAD_PAYLOAD: &[u8] = b"lockbox/v1/payload";
+const AAD_TOUCH_ID: &[u8] = b"lockbox/v1/touch-id";
+const BIOMETRIC_ALGO: &str = "secure-enclave-p256-ecdh-hkdf-sha256+aes-256-gcm";
 
 type Key = Zeroizing<[u8; KEY_LEN]>;
 
@@ -100,6 +102,24 @@ struct Envelope {
     payload: String,
     created_at: u64,
     updated_at: u64,
+    /// Touch ID (M6.1, BRIEF §6.3): the vault key sealed again under a key
+    /// only this Mac's Secure Enclave can re-derive, after a fingerprint.
+    /// Older lockbox versions ignore the field; backups never carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    biometric: Option<BiometricWrap>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct BiometricWrap {
+    algo: String,
+    /// Opaque, chip-bound Secure Enclave key (useless on another Mac).
+    se_key: String,
+    /// Its public half, so a new vault key can be re-wrapped without a prompt.
+    se_public: String,
+    /// Ephemeral ECDH public key for this wrap.
+    ephemeral: String,
+    nonce: String,
+    ciphertext: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -135,6 +155,8 @@ pub enum VaultError {
     Corrupt(String),
     UnsupportedVersion(u32),
     NoSuchEntry,
+    /// Touch ID unlock couldn't produce the vault key.
+    Biometric(String),
     Invalid(String),
     Io(io::Error),
 }
@@ -152,6 +174,7 @@ impl fmt::Display for VaultError {
             Self::Tampered => write!(f, "vault failed integrity check (modified or damaged)"),
             Self::Corrupt(why) => write!(f, "vault file is unreadable: {why}"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported vault version {v}"),
+            Self::Biometric(why) => write!(f, "{why}"),
             Self::NoSuchEntry => write!(f, "no such account"),
             Self::Invalid(why) => write!(f, "{why}"),
             Self::Io(e) => write!(f, "vault I/O error: {e}"),
@@ -175,6 +198,7 @@ pub struct Vault {
     key_wrap: SealedHeader,
     created_at: u64,
     entries: Vec<Entry>,
+    biometric: Option<BiometricWrap>,
 }
 
 impl Vault {
@@ -198,6 +222,7 @@ impl Vault {
             key_wrap,
             created_at: now(),
             entries: Vec::new(),
+            biometric: None,
         };
         vault.save()?;
         Ok(vault)
@@ -217,6 +242,13 @@ impl Vault {
     /// Decrypts an envelope (a vault file or a backup) held in memory. The
     /// returned vault has no path; callers set one or only read entries.
     fn open_raw(raw: &[u8], password: &str) -> Result<Self, VaultError> {
+        let (env, kdf, salt) = Self::parse_envelope(raw)?;
+        let vault_key = unwrap_key(&env.key_wrap, password, &salt, &kdf)?;
+        Self::finish_open(env, kdf, salt, vault_key)
+    }
+
+    /// Parses and sanity-checks an envelope without decrypting anything.
+    fn parse_envelope(raw: &[u8]) -> Result<(Envelope, KdfParams, [u8; SALT_LEN]), VaultError> {
         let env: Envelope =
             serde_json::from_slice(&raw).map_err(|e| VaultError::Corrupt(e.to_string()))?;
         if env.version != FORMAT_VERSION {
@@ -235,9 +267,15 @@ impl Vault {
         };
         kdf.check()?;
         let salt: [u8; SALT_LEN] = decode_fixed(&env.kdf.salt, "salt")?;
+        Ok((env, kdf, salt))
+    }
 
-        let vault_key = unwrap_key(&env.key_wrap, password, &salt, &kdf)?;
-
+    fn finish_open(
+        env: Envelope,
+        kdf: KdfParams,
+        salt: [u8; SALT_LEN],
+        vault_key: Key,
+    ) -> Result<Self, VaultError> {
         let nonce: [u8; NONCE_LEN] = decode_fixed(&env.cipher.nonce, "payload nonce")?;
         let ciphertext = decode(&env.payload, "payload")?;
         let plaintext =
@@ -253,7 +291,114 @@ impl Vault {
             key_wrap: env.key_wrap,
             created_at: env.created_at,
             entries,
+            biometric: env.biometric,
         })
+    }
+
+    // ---- Touch ID (M6.1) ----
+
+    /// Whether the vault file at `path` has Touch ID set up. Reads only the
+    /// unencrypted envelope header.
+    pub fn has_biometric(path: &Path) -> bool {
+        fs::read(path)
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<Envelope>(&raw).ok())
+            .is_some_and(|env| env.biometric.is_some())
+    }
+
+    #[cfg(test)]
+    pub fn biometric_enabled(&self) -> bool {
+        self.biometric.is_some()
+    }
+
+    #[cfg(test)]
+    pub fn biometric_public(&self) -> Option<Vec<u8>> {
+        self.biometric.as_ref().and_then(|b| B64.decode(&b.se_public).ok())
+    }
+
+    /// (chip-bound key, public key, ephemeral key) of the current Touch ID
+    /// setup: enough to re-wrap without a prompt, or to ask for a fingerprint.
+    pub fn biometric_material(&self) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+        let b = self.biometric.as_ref()?;
+        Some((
+            B64.decode(&b.se_key).ok()?,
+            B64.decode(&b.se_public).ok()?,
+            B64.decode(&b.ephemeral).ok()?,
+        ))
+    }
+
+    /// Unlocks with Touch ID. `unwrap(se_key, ephemeral)` must return the
+    /// wrapping key from the Secure Enclave (which asks for a fingerprint).
+    pub fn unlock_biometric(
+        path: &Path,
+        unwrap: impl FnOnce(&[u8], &[u8]) -> Result<Key, String>,
+    ) -> Result<Self, VaultError> {
+        let raw = match fs::read(path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(VaultError::NotFound),
+            Err(e) => return Err(e.into()),
+        };
+        let (env, kdf, salt) = Self::parse_envelope(&raw)?;
+        let bio = env
+            .biometric
+            .clone()
+            .ok_or_else(|| VaultError::Biometric("Touch ID isn't set up for this vault.".into()))?;
+        if bio.algo != BIOMETRIC_ALGO {
+            return Err(VaultError::Biometric("Unknown Touch ID format.".into()));
+        }
+        let se_key = decode(&bio.se_key, "Touch ID key")?;
+        let ephemeral = decode(&bio.ephemeral, "Touch ID ephemeral key")?;
+        let nonce: [u8; NONCE_LEN] = decode_fixed(&bio.nonce, "Touch ID nonce")?;
+        let ciphertext = decode(&bio.ciphertext, "Touch ID key wrap")?;
+        let wrap = unwrap(&se_key, &ephemeral).map_err(VaultError::Biometric)?;
+        let raw_key = open(&wrap, &nonce, AAD_TOUCH_ID, &ciphertext).ok_or_else(|| {
+            VaultError::Biometric(
+                "Touch ID data doesn't match this vault. Use your master password, then turn Touch ID on again.".into(),
+            )
+        })?;
+        if raw_key.len() != KEY_LEN {
+            return Err(VaultError::Corrupt("vault key has wrong length".into()));
+        }
+        let mut vault_key: Key = Zeroizing::new([0u8; KEY_LEN]);
+        vault_key.copy_from_slice(&raw_key);
+        let mut vault = Self::finish_open(env, kdf, salt, vault_key)?;
+        vault.path = path.to_path_buf();
+        Ok(vault)
+    }
+
+    /// Seals the vault key under `wrap` (derived from the Secure Enclave key)
+    /// and saves. Replaces any previous Touch ID setup.
+    pub fn set_biometric(
+        &mut self,
+        se_key: &[u8],
+        se_public: &[u8],
+        ephemeral: &[u8],
+        wrap: &Key,
+    ) -> Result<(), VaultError> {
+        let (nonce, ciphertext) = seal(wrap, AAD_TOUCH_ID, self.vault_key.as_ref());
+        let next = Some(BiometricWrap {
+            algo: BIOMETRIC_ALGO.into(),
+            se_key: B64.encode(se_key),
+            se_public: B64.encode(se_public),
+            ephemeral: B64.encode(ephemeral),
+            nonce: B64.encode(nonce),
+            ciphertext: B64.encode(ciphertext),
+        });
+        let previous = std::mem::replace(&mut self.biometric, next);
+        if let Err(e) = self.save() {
+            self.biometric = previous;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    pub fn clear_biometric(&mut self) -> Result<(), VaultError> {
+        let previous = self.biometric.take();
+        if let Err(e) = self.save() {
+            self.biometric = previous;
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Re-checks the master password against this vault (for actions that
@@ -281,33 +426,38 @@ impl Vault {
         let salt = <[u8; SALT_LEN]>::generate();
         let key_wrap = wrap_key(&vault_key, new, &salt, &kdf)?;
 
+        // The Touch ID wrap seals the old vault key, so it goes in the same
+        // save; the caller re-wraps the new key (no prompt needed).
         let previous = (
             std::mem::replace(&mut self.vault_key, vault_key),
             std::mem::replace(&mut self.kdf, kdf),
             std::mem::replace(&mut self.salt, salt),
             std::mem::replace(&mut self.key_wrap, key_wrap),
+            self.biometric.take(),
         );
         if let Err(e) = self.save() {
             // Disk still holds the old vault; keep memory consistent with it.
-            (self.vault_key, self.kdf, self.salt, self.key_wrap) = previous;
+            (self.vault_key, self.kdf, self.salt, self.key_wrap, self.biometric) = previous;
             return Err(e);
         }
         Ok(())
     }
 
     fn save(&mut self) -> Result<(), VaultError> {
-        let json = self.envelope_json()?;
+        let json = self.envelope_json(true)?;
         write_atomic_with_backup(&self.path, &json)?;
         Ok(())
     }
 
     /// An encrypted backup (BRIEF §7): the same envelope as vault.enc, sealed
     /// with a fresh nonce and opened with the current master password.
+    /// Never includes the Touch ID wrap: it's useless on another Mac, and a
+    /// backup must open with the master password alone.
     pub fn export_bytes(&self) -> Result<Vec<u8>, VaultError> {
-        self.envelope_json()
+        self.envelope_json(false)
     }
 
-    fn envelope_json(&self) -> Result<Vec<u8>, VaultError> {
+    fn envelope_json(&self, include_biometric: bool) -> Result<Vec<u8>, VaultError> {
         let plaintext = Zeroizing::new(
             serde_json::to_vec(&self.entries).map_err(|e| VaultError::Corrupt(e.to_string()))?,
         );
@@ -329,6 +479,7 @@ impl Vault {
             payload: B64.encode(ciphertext),
             created_at: self.created_at,
             updated_at: now(),
+            biometric: if include_biometric { self.biometric.clone() } else { None },
         };
         serde_json::to_vec_pretty(&env).map_err(|e| VaultError::Corrupt(e.to_string()))
     }
@@ -1106,6 +1257,99 @@ mod tests {
         assert!(matches!(read_backup(b"not a backup", PW), Err(VaultError::Corrupt(_))));
         let huge = vec![b' '; MAX_BACKUP_BYTES + 1];
         assert!(matches!(read_backup(&huge, PW), Err(VaultError::Corrupt(_))));
+    }
+
+    /// Stands in for the Secure Enclave: a fixed wrapping key.
+    fn fake_wrap(byte: u8) -> Key {
+        Zeroizing::new([byte; KEY_LEN])
+    }
+
+    fn enable_fake_touch_id(v: &mut Vault, byte: u8) {
+        v.set_biometric(b"chip-bound blob", &[4u8; 65], &[4u8; 65], &fake_wrap(byte)).unwrap();
+    }
+
+    #[test]
+    fn touch_id_unlock_round_trip() {
+        let (_d, path) = setup();
+        let mut v = Vault::create(&path, PW, FAST).unwrap();
+        v.add(&new_entry("Acme", "JBSWY3DPEHPK3PXP"), None).unwrap();
+        assert!(!Vault::has_biometric(&path));
+        enable_fake_touch_id(&mut v, 7);
+        assert!(Vault::has_biometric(&path) && v.biometric_enabled());
+        assert_eq!(v.biometric_public().unwrap(), vec![4u8; 65]);
+        drop(v);
+
+        let v = Vault::unlock_biometric(&path, |se_key, eph| {
+            assert_eq!(se_key, b"chip-bound blob");
+            assert_eq!(eph, &[4u8; 65]);
+            Ok(fake_wrap(7))
+        })
+        .unwrap();
+        assert_eq!(v.entries().len(), 1);
+        // The password path still works and sees the same vault.
+        assert_eq!(Vault::unlock(&path, PW).unwrap().entries().len(), 1);
+    }
+
+    #[test]
+    fn touch_id_failures_are_reported_and_harmless() {
+        let (_d, path) = setup();
+        let mut v = Vault::create(&path, PW, FAST).unwrap();
+        assert!(matches!(
+            Vault::unlock_biometric(&path, |_, _| Ok(fake_wrap(1))),
+            Err(VaultError::Biometric(_))
+        ), "not set up");
+        enable_fake_touch_id(&mut v, 7);
+        assert!(matches!(
+            Vault::unlock_biometric(&path, |_, _| Ok(fake_wrap(8))),
+            Err(VaultError::Biometric(_))
+        ), "wrong wrapping key");
+        assert!(matches!(
+            Vault::unlock_biometric(&path, |_, _| Err("cancelled".into())),
+            Err(VaultError::Biometric(m)) if m == "cancelled"
+        ));
+        Vault::unlock(&path, PW).unwrap();
+    }
+
+    #[test]
+    fn backups_never_carry_touch_id() {
+        let (_d, path) = setup();
+        let mut v = Vault::create(&path, PW, FAST).unwrap();
+        enable_fake_touch_id(&mut v, 7);
+        let backup = String::from_utf8(v.export_bytes().unwrap()).unwrap();
+        assert!(!backup.contains("biometric") && !backup.contains("se_key"));
+        assert!(read_backup(backup.as_bytes(), PW).is_ok());
+    }
+
+    #[test]
+    fn password_change_drops_the_stale_touch_id_wrap() {
+        let (_d, path) = setup();
+        let mut v = Vault::create(&path, PW, FAST).unwrap();
+        enable_fake_touch_id(&mut v, 7);
+        v.change_password_with(PW, "a brand new passphrase", FAST).unwrap();
+        assert!(!v.biometric_enabled());
+        assert!(!Vault::has_biometric(&path), "cleared in the same save as the re-key");
+        // Re-enabling seals the new key and works again.
+        enable_fake_touch_id(&mut v, 9);
+        drop(v);
+        assert!(Vault::unlock_biometric(&path, |_, _| Ok(fake_wrap(9))).is_ok());
+    }
+
+    #[test]
+    fn clear_biometric_removes_it() {
+        let (_d, path) = setup();
+        let mut v = Vault::create(&path, PW, FAST).unwrap();
+        enable_fake_touch_id(&mut v, 7);
+        v.clear_biometric().unwrap();
+        assert!(!Vault::has_biometric(&path));
+    }
+
+    #[test]
+    fn older_files_without_the_field_still_open() {
+        let (_d, path) = setup();
+        Vault::create(&path, PW, FAST).unwrap();
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("biometric"), "absent unless enabled");
+        Vault::unlock(&path, PW).unwrap();
     }
 
     #[test]

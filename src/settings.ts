@@ -11,6 +11,7 @@ export interface Settings {
   theme: Theme;
   lock_on_hide: boolean;
   hide_codes_from_accessibility: boolean;
+  touch_id_to_copy: boolean;
 }
 
 const MIN_PASSWORD_CHARS = 8; // mirrors vault::MIN_PASSWORD_CHARS
@@ -21,6 +22,7 @@ let current: Settings = {
   theme: "system",
   lock_on_hide: false,
   hide_codes_from_accessibility: false,
+  touch_id_to_copy: false,
 };
 
 /** Called after settings change, so the tiles can re-render. */
@@ -176,8 +178,76 @@ function setupBackup() {
   });
 }
 
+interface TouchIdStatus {
+  available: boolean;
+  enabled: boolean;
+}
+
+/** Paints the Touch ID section from the current status. */
+async function paintTouchId() {
+  let status: TouchIdStatus;
+  try {
+    status = await invoke<TouchIdStatus>("touch_id_status");
+  } catch {
+    return;
+  }
+  $<HTMLElement>("#touchid-state").textContent = !status.available
+    ? "Touch ID isn't available on this Mac (no sensor, or no fingerprint enrolled)."
+    : status.enabled
+      ? "On. Unlock with your fingerprint; your master password always works too. Backups still need the password."
+      : "Unlock with your fingerprint instead of typing your master password.";
+  $<HTMLElement>("#touchid-form").hidden = !status.available || status.enabled;
+  $<HTMLElement>("#touchid-off").hidden = !status.enabled;
+  const copy = $<HTMLInputElement>("#s-touchcopy");
+  copy.disabled = !status.enabled;
+  copy.checked = status.enabled && current.touch_id_to_copy;
+}
+
+function setupTouchId() {
+  const msg = $<HTMLElement>("#touchid-msg");
+  const form = $<HTMLFormElement>("#touchid-form");
+  const on = $<HTMLButtonElement>("#touchid-on");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const pw = $<HTMLInputElement>("#touchid-password");
+    if (!pw.value) return pw.focus();
+    on.disabled = true;
+    on.textContent = "Touch the sensor…";
+    msg.textContent = "";
+    try {
+      // Rust checks the password, then asks for a fingerprint once to prove it works.
+      await invoke("touch_id_enable", { password: pw.value });
+      toast("Touch ID is on");
+    } catch (err) {
+      msg.textContent = errorText(err);
+      shake(form);
+    } finally {
+      pw.value = "";
+      on.disabled = false;
+      on.textContent = "Turn on Touch ID…";
+      await paintTouchId();
+    }
+  });
+  $<HTMLButtonElement>("#touchid-off").addEventListener("click", async () => {
+    msg.textContent = "";
+    try {
+      await invoke("touch_id_disable");
+      current.touch_id_to_copy = false;
+      toast("Touch ID is off");
+    } catch (err) {
+      msg.textContent = errorText(err);
+    }
+    await paintTouchId();
+  });
+  $<HTMLInputElement>("#s-touchcopy").addEventListener("change", (e) =>
+    save({ touch_id_to_copy: (e.target as HTMLInputElement).checked }),
+  );
+}
+
 export function openSettings() {
   populate();
+  $<HTMLElement>("#touchid-msg").textContent = "";
+  void paintTouchId();
   resetPasswordForm();
   resetBackup();
   $<HTMLDialogElement>("#settings-dialog").showModal();
@@ -186,6 +256,7 @@ export function openSettings() {
 
 export function setupSettings() {
   setupBackup();
+  setupTouchId();
   $<HTMLButtonElement>("#settings-btn").addEventListener("click", openSettings);
   $<HTMLSelectElement>("#s-theme").addEventListener("change", (e) =>
     save({ theme: (e.target as HTMLSelectElement).value as Theme }),

@@ -15,10 +15,10 @@ The full plan, scope and milestones are in [BRIEF.md](BRIEF.md).
 | M3 | Codes: add entries (manual, `otpauth://` paste), TOTP/HOTP generation | done |
 | M4 | UI parity: tile grid, copy with clipboard wipe, settings | done |
 | M5 | QR image import, encrypted export/import | in review |
-| M6 | Hardening: lock on sleep/screen lock, panic hotkey, capture exclusion, password backoff, recovery | in review |
-| M6.1 | Touch ID unlock | next |
+| M6 | Hardening: lock on sleep/screen lock, panic hotkey, capture exclusion, password backoff, recovery | done |
+| M6.1 | Touch ID unlock (Secure Enclave), optional Touch ID to copy | in review |
 
-Right now you can create a vault and add accounts from a screenshot of the QR code (drop, paste or pick it), by pasting an `otpauth://` link, or by typing the secret. Accounts show as a tile grid with live codes, for both time-based and counter-based accounts. Click a tile to copy its code. You can search, edit or delete accounts, and export or import encrypted backups. Settings cover the theme, lock after inactivity, how long copied codes stay on the clipboard, changing the master password, backups, and checking for updates.
+Right now you can create a vault and add accounts from a screenshot of the QR code (drop, paste or pick it), by pasting an `otpauth://` link, or by typing the secret. Accounts show as a tile grid with live codes, for both time-based and counter-based accounts. Click a tile to copy its code. You can search, edit or delete accounts, and export or import encrypted backups. You can unlock with Touch ID. Settings cover Touch ID, the theme, lock after inactivity, how long copied codes stay on the clipboard, changing the master password, backups, and checking for updates.
 
 Shortcuts: ⌘N add, ⌘F search, ⌘, settings, ⌘L lock, and ⌃⌥⌘L to lock from any app.
 
@@ -45,8 +45,8 @@ Shortcuts: ⌘N add, ⌘F search, ⌘, settings, ⌘L lock, and ⌃⌥⌘L to lo
 - **Screenshots:** the window is excluded from screen capture, so screenshots, recordings and screen sharing show it blank. That includes your own screenshots of lockbox.
 - **Password guessing:** after 5 wrong master passwords, each further attempt waits longer (1 s, 2 s, 4 s… up to 30 s). Every password prompt shares this counter: unlock, change password, export, update and restore. It resets when the app restarts and does nothing against an attacker who has a copy of `vault.enc`. Against that attacker, Argon2id and a strong password are what count.
 - **Accessibility:** by default, codes on screen are readable through accessibility while the vault is unlocked, so VoiceOver works. **Settings → Hide codes from accessibility tools** removes them from the accessibility tree.
-- **Not covered yet:** an agent could click a tile to copy a code.
-- **What would close the gap:** Touch ID (M6.1). Synthetic clicks and keystrokes can't fake a fingerprint.
+- **Copying:** an agent could click a tile to copy a code, unless **Settings → Require Touch ID to copy codes** is on. Then every copy needs a real fingerprint.
+- **Touch ID** (M6.1): synthetic clicks and keystrokes can't fake a fingerprint, and the Secure Enclave enforces the fingerprint, not lockbox's code.
 - **Your own control:** be deliberate about which apps hold Screen Recording and Accessibility permission.
 
 **The in-app updater** lets an unlocked session build and install `master`. Installing requires re-entering the master password, so clicks alone can't install new code. Anyone who can push to `master` on GitHub can ship code to this laptop the next time you update, so treat push access to `master` like access to your vault.
@@ -56,7 +56,7 @@ Shortcuts: ⌘N add, ⌘F search, ⌘, settings, ⌘L lock, and ⌃⌥⌘L to lo
 - macOS 12 or later. Developed and tested on macOS 13.7.8 (Ventura).
 - Rust stable (currently 1.99.1). Tauri 2.12 needs a newer Rust than 1.89, so run `rustup update stable` if a build complains about versions.
 - Node 22+ and npm.
-- Xcode command line tools.
+- Xcode command line tools, including `swiftc`. The Touch ID bridge is a small Swift file compiled by `build.rs`.
 - `cargo-audit` and `cargo-deny` for the release checks: `cargo install cargo-audit cargo-deny --locked`.
 
 ## Develop
@@ -177,6 +177,19 @@ There is deliberately no plain-text export.
 
 On the **QR image** tab of **+ Add**, drop a screenshot, paste one with ⌘V, or choose a file. PNG and JPEG are supported, up to 20 MB and 8000 px per side. The image goes to Rust as raw bytes, where [qr.rs](src-tauri/src/qr.rs) decodes it with `rqrr`. Only the account preview comes back to the webview, never the decoded link.
 
+### Touch ID (M6.1)
+
+**Settings → Touch ID → Turn on Touch ID…** asks for your master password, then for one touch to prove it works. After that, the lock screen offers **Unlock with Touch ID**, and prompts automatically when lockbox launches. It doesn't prompt after locking on sleep or with the hotkey. Your master password always works too.
+
+How it works:
+
+- **Secure Enclave key:** lockbox creates a key inside your Mac's Secure Enclave that can only be used after a current fingerprint. Adding or removing a fingerprint in System Settings disables it until you turn Touch ID on again. The key never leaves the chip; what lockbox stores is an opaque blob that only this Mac's Secure Enclave can use.
+- **Second copy of the vault key:** the vault key is sealed a second time to that chip key and stored in `vault.enc` next to the password copy.
+- **Backups never include it:** a backup always needs the master password.
+- **Changing your password** re-seals the Touch ID copy for the new key automatically, with no fingerprint needed.
+- **No keychain, no entitlements:** the Secure Enclave code is in [secure_enclave.swift](src-tauri/swift/secure_enclave.swift), because Apple's API for it is Swift-only, and Rust calls it through a C interface. Apple's keychain route for Touch ID needs developer entitlements an ad-hoc-signed app can't have; see BRIEF §6.3.
+- **Require Touch ID to copy codes** (optional) asks for a fingerprint before every copy.
+
 ### Hardening (M6)
 
 - **Locking:** lockbox locks when the Mac sleeps, its displays sleep, the screen locks, the screensaver starts, or another user takes over. [system.rs](src-tauri/src/system.rs) listens for these through macOS's own notifications. The UI notices within a second, because Rust starts refusing its requests for codes, so the webview needs no extra permission.
@@ -206,6 +219,9 @@ These are the only commands the webview can call. Each one is declared in [build
 | `create_vault(password)` | yes |
 | `unlock(password)` | yes (returns the backoff wait and whether a damaged vault can be restored) |
 | `restore_backup(password)` | yes (recovery from `vault.enc.bak`) |
+| `touch_id_status`, `unlock_touch_id` | yes |
+| `touch_id_enable(password)` | no, and it also re-checks the master password |
+| `touch_id_disable` | no |
 | `lock` | yes |
 | `settings_get` | yes (the lock screen needs the theme) |
 | `settings_set(settings)` | no |

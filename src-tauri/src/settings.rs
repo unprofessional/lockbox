@@ -28,6 +28,9 @@ pub struct Settings {
     /// Keep codes out of the accessibility tree, so screen readers and
     /// accessibility-driven agents can't read them (M6, BRIEF §9).
     pub hide_codes_from_accessibility: bool,
+    /// Ask for Touch ID before every copy (M6.1). Only applies while Touch ID
+    /// unlock is set up.
+    pub touch_id_to_copy: bool,
 }
 
 impl Default for Settings {
@@ -38,6 +41,7 @@ impl Default for Settings {
             theme: Theme::System,
             lock_on_hide: false,
             hide_codes_from_accessibility: false,
+            touch_id_to_copy: false,
         }
     }
 }
@@ -107,6 +111,7 @@ mod tests {
             theme: Theme::Dark,
             lock_on_hide: true,
             hide_codes_from_accessibility: true,
+            touch_id_to_copy: true,
         };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);

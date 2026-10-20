@@ -3,6 +3,7 @@ use std::process::Command;
 
 fn main() {
     embed_build_info();
+    build_secure_enclave_bridge();
 
     // Every app command must be listed here; each one then needs an explicit
     // `allow-*` permission in capabilities/default.json before the webview can
@@ -15,6 +16,10 @@ fn main() {
                 "create_vault",
                 "unlock",
                 "restore_backup",
+                "touch_id_status",
+                "unlock_touch_id",
+                "touch_id_enable",
+                "touch_id_disable",
                 "lock",
                 "change_password",
                 "list_entries",
@@ -76,4 +81,46 @@ fn embed_build_info() {
         }
     }
     println!("cargo:rerun-if-env-changed=PATH");
+}
+
+/// Compiles swift/secure_enclave.swift (Touch ID via CryptoKit, M6.1) into a
+/// static library and links it with the system Swift runtime.
+fn build_secure_enclave_bridge() {
+    let src = "swift/secure_enclave.swift";
+    println!("cargo:rerun-if-changed={src}");
+    let out = std::env::var("OUT_DIR").unwrap();
+    let arch = match std::env::var("CARGO_CFG_TARGET_ARCH").unwrap().as_str() {
+        "aarch64" => "arm64",
+        other => other,
+    }
+    .to_string();
+    let target = format!("{arch}-apple-macos12.0");
+
+    let status = Command::new("xcrun")
+        .args(["swiftc", "-emit-library", "-static", "-parse-as-library", "-O"])
+        .args(["-module-name", "LockboxSecureEnclave", "-target", &target])
+        .arg("-o")
+        .arg(format!("{out}/libLockboxSecureEnclave.a"))
+        .arg(src)
+        .status()
+        .expect("failed to run swiftc (Xcode command line tools required)");
+    assert!(status.success(), "swiftc failed to build {src}");
+
+    println!("cargo:rustc-link-search=native={out}");
+    println!("cargo:rustc-link-lib=static=LockboxSecureEnclave");
+    for framework in ["Foundation", "CryptoKit", "LocalAuthentication", "Security"] {
+        println!("cargo:rustc-link-lib=framework={framework}");
+    }
+    // Swift runtime: system copy at run time (macOS 12+), toolchain copy
+    // (compatibility shims) at link time.
+    let swift = Command::new("xcrun").args(["--find", "swift"]).output().unwrap();
+    let swift = String::from_utf8(swift.stdout).unwrap();
+    let toolchain_lib = Path::new(swift.trim())
+        .parent()
+        .and_then(|bin| bin.parent())
+        .map(|usr| usr.join("lib/swift/macosx"))
+        .unwrap();
+    println!("cargo:rustc-link-search=native={}", toolchain_lib.display());
+    println!("cargo:rustc-link-search=native=/usr/lib/swift");
+    println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
 }

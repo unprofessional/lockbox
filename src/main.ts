@@ -94,6 +94,39 @@ interface UnlockOutcome {
   retry_after_secs: number;
   problem: string | null;
   can_restore: boolean;
+  touch_id_error: string | null;
+}
+
+/** Shows "Unlock with Touch ID" when it's set up; `prompt` asks right away. */
+async function offerTouchId(prompt: boolean) {
+  const btn = $<HTMLButtonElement>("#touchid-btn");
+  try {
+    const s = await invoke<{ available: boolean; enabled: boolean }>("touch_id_status");
+    btn.hidden = !(s.available && s.enabled);
+  } catch {
+    btn.hidden = true;
+  }
+  if (prompt && !btn.hidden) void unlockWithTouchId();
+}
+
+async function unlockWithTouchId() {
+  const btn = $<HTMLButtonElement>("#touchid-btn");
+  const msg = $<HTMLElement>("#unlock-msg");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  msg.textContent = "";
+  try {
+    const o = await invoke<UnlockOutcome>("unlock_touch_id");
+    if (o.unlocked) {
+      show("vault");
+    } else if (o.touch_id_error) {
+      msg.textContent = o.touch_id_error;
+    }
+  } catch (err) {
+    msg.textContent = errorText(err);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 let countdown: number | undefined;
@@ -174,6 +207,7 @@ function setupUnlock() {
     e.preventDefault();
     void attempt("unlock", "Unlocking…");
   });
+  $<HTMLButtonElement>("#touchid-btn").addEventListener("click", () => void unlockWithTouchId());
   $<HTMLButtonElement>("#restore-btn").addEventListener("click", () => {
     if (!pw.value) {
       msg.textContent = "Enter your master password first.";
@@ -217,11 +251,14 @@ async function lockNow() {
   showLocked("");
 }
 
-/** Shows the lock screen; `reason` explains a lock the user didn't click. */
+/** Shows the lock screen; `reason` explains a lock the user didn't click.
+ * Touch ID is offered but not prompted: a lock from sleep or the hotkey
+ * shouldn't pop a fingerprint dialog. */
 function showLocked(reason: string) {
   resetUpdate();
   $<HTMLElement>("#unlock-msg").textContent = reason;
   show("unlock");
+  void offerTouchId(false);
 }
 
 /** Locks the UI follows: sleep, screen lock and the panic hotkey happen in
@@ -356,6 +393,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     show("create");
   } else if (await invoke<boolean>("is_locked")) {
     show("unlock");
+    void offerTouchId(true); // at launch, ask right away
   } else {
     show("vault");
   }

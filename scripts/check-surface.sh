@@ -37,7 +37,16 @@ if grep -lE 'std::process|Command::new|process::Command' src-tauri/src/*.rs | gr
   bad "process spawning outside src-tauri/src/update.rs"
 fi
 
-# 6. CSP locked: default-src 'none', no remote origins beyond Tauri's IPC.
+# 6. The Swift Touch ID bridge: only these frameworks, and no networking APIs
+#    (Foundation alone would allow URLSession).
+if grep -hE '^[[:space:]]*import ' src-tauri/swift/*.swift | grep -vE '^[[:space:]]*import (Foundation|CryptoKit|LocalAuthentication|Security)$' ; then
+  bad "unexpected framework imported in src-tauri/swift"
+fi
+if grep -nE 'URLSession|URLRequest|NWConnection|NWPathMonitor|CFNetwork|CFStream|Socket|NSURLConnection' src-tauri/swift/*.swift ; then
+  bad "networking API used in src-tauri/swift"
+fi
+
+# 7. CSP locked: default-src 'none', no remote origins beyond Tauri's IPC.
 csp=$(node -e 'const c=require("./src-tauri/tauri.conf.json");process.stdout.write(c.app.security.csp||"")')
 case "$csp" in
   *"default-src 'none'"*) ;;
@@ -50,4 +59,4 @@ fi
 if [ "$fail" -ne 0 ]; then
   exit 1
 fi
-echo "PASS surface check: no plugins, no networking crates, process spawning only in update.rs, locked capabilities and CSP"
+echo "PASS surface check: no plugins, no networking crates or Swift networking, process spawning only in update.rs, locked capabilities and CSP"

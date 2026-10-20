@@ -72,7 +72,24 @@ Writes are atomic: serialize → encrypt → write `vault.enc.tmp` → fsync →
 - Password never persisted. Held in memory only while unlocked, `Zeroizing`.
 - First run = vault-creation wizard: enter password twice, strength meter, scary-but-honest warning that **there is no recovery** — lose the password, lose the vault (offer encrypted export as the backup ritual).
 
-### 6.3 Optional Touch ID unlock (v1.1, not v1)
+### 6.3 Optional Touch ID unlock (delivered in M6.1)
+
+**As built (2026-10-19):** the Keychain route below turned out to need entitlements an ad-hoc-signed app can't have. A spike on the MacBook showed:
+- the data-protection keychain with a biometry ACL fails with `-34018 errSecMissingEntitlement`;
+- the legacy keychain works, but the fingerprint check would only be enforced by lockbox's own code, and ad-hoc re-signing would trigger a keychain password prompt after every update;
+- a **CryptoKit Secure Enclave** key with `[.privateKeyUsage, .biometryCurrentSet]` works ad-hoc signed, and its chip-bound `dataRepresentation` persists as plain data.
+
+So lockbox seals the vault key a second time using ECIES to a Secure Enclave P-256 key. A fresh ephemeral key does ECDH with the chip key's public half; HKDF-SHA256 (salted with the ephemeral key, info `lockbox/v1/touch-id`) derives the AES-256-GCM key that seals the vault key. This is stored as an optional `biometric` field in the envelope. Unwrapping needs the chip, and the chip demands a current fingerprint. Adding or removing a fingerprint invalidates the key (`biometryCurrentSet`).
+
+The Swift code is limited to `swift/secure_enclave.swift`: about 60 lines, compiled by `build.rs`, and restricted by the surface check to Foundation, CryptoKit, LocalAuthentication and Security with no networking APIs.
+
+How it behaves:
+- **Enabling** needs the master password plus one test touch.
+- **Backups** never include the Touch ID wrap.
+- **A password change** drops the wrap in the same save, then re-wraps to the same chip key without a prompt.
+- **The optional "Require Touch ID to copy codes" setting** asks the chip for a fingerprint before each copy.
+
+**Original plan:**
 
 - On first successful password unlock, generate a random 256-bit **vault key** VK; encrypt payload with VK.
 - Wrap VK with a Keychain item (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, biometry-gated via `security-framework` / LocalAuthentication). Store wrapped VK in `vault.keychain` alongside the envelope; password-derived key also wraps VK inside the envelope → both unlock paths work, password remains recovery.
@@ -180,7 +197,7 @@ Touch ID is the strongest control here: biometric presence is the one thing synt
      - `cargo deny` added to the release checks;
      - version 1.0.0.
    - The UI learns about background locks from `get_codes` being refused, so the webview needs no event permission.
-7. **M6.1 — Touch ID unlock** (§6.3, decided 2026-10-19 to follow M6 as its own milestone). Gate: unlock with a fingerprint; the password still works and remains the only key to backups.
+7. **M6.1 — Touch ID unlock** (§6.3, decided 2026-10-19 to follow M6 as its own milestone). Gate: unlock with a fingerprint; the password still works and remains the only key to backups. **Delivered:** see §6.3 "As built".
 
 Suggested rollout for real tokens: start by importing a burner/low-stakes account, keep phone authenticator as fallback until trust is earned.
 
