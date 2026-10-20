@@ -1,6 +1,6 @@
 [package]
 name = "lockbox"
-version = "1.0.0"
+version = "1.1.0"
 description = "Local-only TOTP/HOTP authenticator for macOS"
 authors = ["unprofessional"]
 edition = "2024"

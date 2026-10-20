@@ -94,6 +94,63 @@ interface UnlockOutcome {
   retry_after_secs: number;
   problem: string | null;
   can_restore: boolean;
+  touch_id_error: string | null;
+}
+
+/** Shows "Unlock with Touch ID" when it's set up; `prompt` asks right away. */
+async function offerTouchId(prompt: boolean) {
+  const btn = $<HTMLButtonElement>("#touchid-btn");
+  try {
+    const s = await invoke<{ available: boolean; enabled: boolean }>("touch_id_status");
+    btn.hidden = !(s.available && s.enabled);
+  } catch {
+    btn.hidden = true;
+  }
+  if (prompt && !btn.hidden) void unlockWithTouchId();
+}
+
+/** Touch ID on return (M6.1, on by default, a setting): coming back to
+ * lockbox while it's locked asks for a fingerprint, just as launching does. Armed when the window loses
+ * focus or is hidden on the lock screen; our own prompt doesn't arm it,
+ * since the system Touch ID dialog takes focus too. */
+let promptOnReturn = false;
+let touchIdPromptOpen = false;
+
+function setupTouchIdOnReturn() {
+  const away = () => {
+    if (!screens.unlock.hidden && !touchIdPromptOpen) promptOnReturn = true;
+  };
+  const back = () => {
+    if (!promptOnReturn || screens.unlock.hidden || document.hidden || !document.hasFocus()) return;
+    if (!getSettings().touch_id_on_return) return; // Settings → Touch ID
+    promptOnReturn = false;
+    void offerTouchId(true);
+  };
+  window.addEventListener("blur", away);
+  window.addEventListener("focus", back);
+  document.addEventListener("visibilitychange", () => (document.hidden ? away() : back()));
+}
+
+async function unlockWithTouchId() {
+  const btn = $<HTMLButtonElement>("#touchid-btn");
+  const msg = $<HTMLElement>("#unlock-msg");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  touchIdPromptOpen = true;
+  msg.textContent = "";
+  try {
+    const o = await invoke<UnlockOutcome>("unlock_touch_id");
+    if (o.unlocked) {
+      show("vault");
+    } else if (o.touch_id_error) {
+      msg.textContent = o.touch_id_error;
+    }
+  } catch (err) {
+    msg.textContent = errorText(err);
+  } finally {
+    btn.disabled = false;
+    touchIdPromptOpen = false;
+  }
 }
 
 let countdown: number | undefined;
@@ -174,6 +231,7 @@ function setupUnlock() {
     e.preventDefault();
     void attempt("unlock", "Unlocking…");
   });
+  $<HTMLButtonElement>("#touchid-btn").addEventListener("click", () => void unlockWithTouchId());
   $<HTMLButtonElement>("#restore-btn").addEventListener("click", () => {
     if (!pw.value) {
       msg.textContent = "Enter your master password first.";
@@ -217,11 +275,16 @@ async function lockNow() {
   showLocked("");
 }
 
-/** Shows the lock screen; `reason` explains a lock the user didn't click. */
+/** Shows the lock screen; `reason` explains a lock the user didn't click.
+ * Locking never prompts by itself: Touch ID is asked for when the user comes
+ * back (see setupTouchIdOnReturn), or right away if lockbox is in front. */
 function showLocked(reason: string) {
   resetUpdate();
   $<HTMLElement>("#unlock-msg").textContent = reason;
   show("unlock");
+  void offerTouchId(false);
+  // Locked while away (sleep, hotkey from another app, hide): ask on return.
+  promptOnReturn = document.hidden || !document.hasFocus();
 }
 
 /** Locks the UI follows: sleep, screen lock and the panic hotkey happen in
@@ -349,6 +412,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   setupSettings();
   setupIdleLock();
   setupBackgroundLocks();
+  setupTouchIdOnReturn();
   void showBuildInfo();
   await loadSettings();
 
@@ -356,6 +420,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     show("create");
   } else if (await invoke<boolean>("is_locked")) {
     show("unlock");
+    void offerTouchId(true); // at launch, ask right away
   } else {
     show("vault");
   }

@@ -28,6 +28,12 @@ pub struct Settings {
     /// Keep codes out of the accessibility tree, so screen readers and
     /// accessibility-driven agents can't read them (M6, BRIEF §9).
     pub hide_codes_from_accessibility: bool,
+    /// Ask for Touch ID before every copy (M6.1). Only applies while Touch ID
+    /// unlock is set up.
+    pub touch_id_to_copy: bool,
+    /// Ask for Touch ID automatically when the user comes back to a locked
+    /// lockbox (M6.1). Launch always asks.
+    pub touch_id_on_return: bool,
 }
 
 impl Default for Settings {
@@ -38,6 +44,8 @@ impl Default for Settings {
             theme: Theme::System,
             lock_on_hide: false,
             hide_codes_from_accessibility: false,
+            touch_id_to_copy: false,
+            touch_id_on_return: true,
         }
     }
 }
@@ -107,6 +115,8 @@ mod tests {
             theme: Theme::Dark,
             lock_on_hide: true,
             hide_codes_from_accessibility: true,
+            touch_id_to_copy: true,
+            touch_id_on_return: false,
         };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);
@@ -136,6 +146,7 @@ mod tests {
         assert_eq!(s.auto_lock_minutes, 5);
         assert_eq!(s.clipboard_wipe_seconds, 30);
         assert!(!s.lock_on_hide && !s.hide_codes_from_accessibility, "M4-era files get the M6 defaults");
+        assert!(s.touch_id_on_return, "on unless turned off");
     }
 
     #[test]

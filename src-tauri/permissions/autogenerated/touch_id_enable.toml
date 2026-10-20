@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-touch-id-enable"
+description = "Enables the touch_id_enable command without any pre-configured scope."
+commands.allow = ["touch_id_enable"]
+
+[[permission]]
+identifier = "deny-touch-id-enable"
+description = "Denies the touch_id_enable command without any pre-configured scope."
+commands.deny = ["touch_id_enable"]
