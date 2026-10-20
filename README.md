@@ -179,7 +179,7 @@ On the **QR image** tab of **+ Add**, drop a screenshot, paste one with ⌘V, or
 
 ### Touch ID (M6.1)
 
-**Settings → Touch ID → Turn on Touch ID…** asks for your master password, then for one touch to prove it works. After that, the lock screen offers **Unlock with Touch ID**, and prompts automatically when lockbox launches. It doesn't prompt after locking on sleep or with the hotkey. Your master password always works too.
+**Settings → Touch ID → Turn on Touch ID…** asks for your master password, then for one touch to prove it works. After that, the lock screen offers **Unlock with Touch ID**. It also prompts automatically whenever you come to lockbox while it's locked: at launch, and when you return after minimizing or hiding it, switching apps or desktops, waking the Mac, or using the panic hotkey from another app. Locking never prompts by itself; if you press ⌘L and stay, nothing pops up until you leave and come back. Your master password always works too.
 
 How it works:
 
