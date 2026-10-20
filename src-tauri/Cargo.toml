@@ -1,9 +1,10 @@
 [package]
 name = "lockbox"
-version = "0.1.0"
+version = "1.0.0"
 description = "Local-only TOTP/HOTP authenticator for macOS"
 authors = ["unprofessional"]
 edition = "2024"
+publish = false
 
 [lib]
 # The `_lib` suffix keeps the lib name distinct from the bin name.
@@ -34,8 +35,9 @@ totp-rs = { version = "6", default-features = false, features = ["std", "zeroize
 # tree, instead of tauri-plugin-clipboard-manager. See src/clipboard.rs.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSSavePanel", "NSPanel", "NSWindow", "NSResponder", "NSApplication"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSURL"] }
+block2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSSavePanel", "NSPanel", "NSWindow", "NSResponder", "NSApplication", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSURL", "NSNotification", "NSDistributedNotificationCenter", "NSOperation", "block2"] }
 
 [dev-dependencies]
 tempfile = "3"

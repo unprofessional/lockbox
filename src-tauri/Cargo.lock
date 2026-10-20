@@ -1996,11 +1996,12 @@ dependencies = [
 
 [[package]]
 name = "lockbox"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "aes-gcm",
  "argon2",
  "base64 0.23.1",
+ "block2",
  "image",
  "objc2",
  "objc2-app-kit",

@@ -169,6 +169,18 @@ Touch ID is the strongest control here: biometric presence is the one thing synt
 4. **M4 — UI parity pass:** tile grid, search, copy + clipboard wipe, add-entry sheet, toasts, dark/light. Gate: side-by-side with Authy desktop screenshots feels familiar to mads.
 5. **M5 — QR image import + encrypted export/import.** Gate: screenshot a real enrollment QR, import it, code matches phone authenticator; export → delete vault → import → identical entries.
 6. **M6 — hardening & polish:** auto-lock timers, panic hotkey, NSWindowSharingNone, unlock backoff (enforced in Rust, in-memory, resets on success: 5 free attempts then 1s doubling to a ~30s cap; `unlock` returns the remaining wait; `change_password`'s old-password check shares it), decision on accessibility exposure of codes (§9 agents), first-run wizard copy, README with threat model. Gate: mads daily-drives it for a week with real (low-stakes first) tokens.
+   - **Delivered (2026-10-19):**
+     - lock on system sleep, display sleep, screen lock, screensaver and user switch (NSWorkspace and distributed notifications), plus an optional lock when minimized or hidden;
+     - a global panic hotkey ⌃⌥⌘L via Carbon `RegisterEventHotKey`, which needs no Accessibility permission;
+     - `NSWindowSharingNone`, always on;
+     - a password backoff shared by **every** master-password check (unlock, change password, export, update, restore), so an unlocked session can't be used as a password oracle;
+     - an optional "Hide codes from accessibility tools" setting, off by default because it also hides codes from VoiceOver;
+     - clipboard wipe on quit;
+     - guided restore from `vault.enc.bak` when `vault.enc` is damaged, with the damaged file kept aside;
+     - `cargo deny` added to the release checks;
+     - version 1.0.0.
+   - The UI learns about background locks from `get_codes` being refused, so the webview needs no event permission.
+7. **M6.1 — Touch ID unlock** (§6.3, decided 2026-10-19 to follow M6 as its own milestone). Gate: unlock with a fingerprint; the password still works and remains the only key to backups.
 
 Suggested rollout for real tokens: start by importing a burner/low-stakes account, keep phone authenticator as fallback until trust is earned.
 
@@ -183,10 +195,10 @@ Suggested rollout for real tokens: start by importing a burner/low-stakes accoun
 
 1. App name? (`lockbox` is a placeholder — also a real product name, so pick something less collision-prone if he cares.)
 2. Frontend flavor: vanilla TS or Svelte? (his diff-checker project may already have a preference)
-3. Touch ID unlock: v1 or v1.1? (brief assumes v1.1; envelope designed for it either way)
+3. ~~Touch ID unlock: v1 or v1.1?~~ Decided: M6.1, right after M6.
 4. Webcam QR scanning: wanted at all, or is screenshot/file import enough? (brief assumes file/image import suffices)
 5. Repo location + visibility: private GitHub under which account (unprofessional? moldy-devcru?), or local-only git?
-6. Desktop agents (§9): pull Touch ID unlock forward from v1.1? Add an optional "require Touch ID to copy a code" setting? Hide codes from the accessibility tree at the cost of VoiceOver support?
+6. ~~Desktop agents (§9)~~ Decided in M6: Touch ID → M6.1; hiding codes from accessibility is an opt-in setting. "Touch ID to copy a code" stays open for M6.1.
 
 ## 14. Dispatch notes (for whoever runs Codex)
 

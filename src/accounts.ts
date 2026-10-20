@@ -1,7 +1,15 @@
 // Accounts list, live codes, add/edit/delete (BRIEF §7, §8, §10).
 // Seeds never reach this file: Rust returns metadata and rendered codes only.
 import { invoke } from "@tauri-apps/api/core";
+import { getSettings, onSettingsChange } from "./settings";
 import { $, errorText, shake, toast } from "./ui";
+
+const LOCKED = "vault is locked"; // mirrors lib.rs LOCKED
+
+/** Called when Rust reports the vault locked behind the UI's back (system
+ * sleep or screen lock, the panic hotkey). */
+let onLocked: () => void = () => {};
+export const onLockedElsewhere = (f: () => void) => (onLocked = f);
 
 type Kind = "totp" | "hotp";
 
@@ -138,6 +146,8 @@ function render() {
       foot.className = "tile-foot";
       const code = document.createElement("span");
       code.className = "code";
+      // Optional (Settings): keep codes out of the accessibility tree.
+      if (getSettings().hide_codes_from_accessibility) code.setAttribute("aria-hidden", "true");
       foot.append(code);
       if (e.kind === "totp") {
         foot.insertAdjacentHTML(
@@ -186,8 +196,9 @@ async function tick() {
   let codes: CodeOut[];
   try {
     codes = await invoke<CodeOut[]>("get_codes");
-  } catch {
-    return; // locked mid-tick; stopAccounts() cleans up
+  } catch (err) {
+    if (err === LOCKED && timer !== undefined) onLocked();
+    return;
   }
   for (const c of codes) {
     const li = document.querySelector<HTMLElement>(`.tile[data-id="${c.id}"]`);
@@ -435,6 +446,9 @@ async function confirmDelete(ev: SubmitEvent) {
 }
 
 export function setupAccounts() {
+  onSettingsChange(() => {
+    if (timer !== undefined) render();
+  });
   $<HTMLInputElement>("#search").addEventListener("input", render);
   $<HTMLButtonElement>("#add-btn").addEventListener("click", openAdd);
   for (const t of ["qr", "uri", "manual"] as Tab[]) {

@@ -1,0 +1,53 @@
+# cargo deny (BRIEF §12), run by scripts/release.sh alongside cargo audit.
+
+[graph]
+# lockbox only ever builds for macOS; Linux-only crates in Tauri's tree
+# (GTK, glib) are never compiled and are left out of every check.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+
+[advisories]
+# No exceptions. Any advisory for a crate that ships in lockbox fails the release.
+ignore = []
+
+[licenses]
+# Permissive licences, plus MPL-2.0 (below). A new crate under anything else
+# needs a deliberate decision here.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "CC0-1.0",
+  # File-level copyleft: only binds modified MPL files we distribute. Used by
+  # Tauri's HTML/CSS tooling (cssparser, selectors) and dirs' option-ext.
+  "MPL-2.0",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+# lockbox itself is unpublished (publish = false) and needs no licence entry.
+ignore = true
+
+[bans]
+# Tauri's tree carries duplicate versions we don't control; not a policy issue.
+multiple-versions = "allow"
+wildcards = "deny"
+# Belt and braces with scripts/check-surface.sh: no networking crates, ever.
+deny = [
+  { crate = "reqwest" },
+  { crate = "hyper" },
+  { crate = "ureq" },
+  { crate = "isahc" },
+  { crate = "curl" },
+  { crate = "attohttpc" },
+  { crate = "surf" },
+  { crate = "tungstenite" },
+  { crate = "tokio-tungstenite" },
+]
+
+[sources]
+# crates.io only: no other registries, no git dependencies.
+unknown-registry = "deny"
+unknown-git = "deny"

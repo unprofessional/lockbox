@@ -955,3 +955,38 @@ button.danger.solid {
   color: var(--accent-text);
   border: none;
 }
+
+/* ---- M6: recovery, settings toggles ---- */
+
+.recovery {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.recovery button {
+  align-self: flex-start;
+}
+
+.check.setting {
+  align-items: flex-start;
+  font-size: 13px;
+}
+
+.check.setting input {
+  margin-top: 2px;
+  flex: none;
+}
+
+.check.setting small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
