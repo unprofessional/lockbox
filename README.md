@@ -217,3 +217,7 @@ Then delete the `~/lockbox` folder.
 - [docs/development.md](docs/development.md): working on lockbox.
 - [docs/plans/](docs/plans/): what it would take to run on Windows and Linux.
 - [docs/history/](docs/history/): the original brief, and how lockbox was built milestone by milestone.
+
+## License
+
+lockbox is released under the [Zero-Clause BSD licence](LICENSE) (0BSD), about as permissive as a licence gets. You can use, change, share and sell it, with or without crediting anyone. It comes **with no warranty**: it's provided as is, and you use it at your own risk. The open-source libraries it builds on keep their own licences (mostly MIT and Apache-2.0); `cargo deny` checks them on every build.
