@@ -109,8 +109,8 @@ async function offerTouchId(prompt: boolean) {
   if (prompt && !btn.hidden) void unlockWithTouchId();
 }
 
-/** Touch ID on return (M6.1): coming back to lockbox while it's locked asks
- * for a fingerprint, just as launching does. Armed when the window loses
+/** Touch ID on return (M6.1, on by default, a setting): coming back to
+ * lockbox while it's locked asks for a fingerprint, just as launching does. Armed when the window loses
  * focus or is hidden on the lock screen; our own prompt doesn't arm it,
  * since the system Touch ID dialog takes focus too. */
 let promptOnReturn = false;
@@ -122,6 +122,7 @@ function setupTouchIdOnReturn() {
   };
   const back = () => {
     if (!promptOnReturn || screens.unlock.hidden || document.hidden || !document.hasFocus()) return;
+    if (!getSettings().touch_id_on_return) return; // Settings → Touch ID
     promptOnReturn = false;
     void offerTouchId(true);
   };

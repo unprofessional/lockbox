@@ -12,6 +12,7 @@ export interface Settings {
   lock_on_hide: boolean;
   hide_codes_from_accessibility: boolean;
   touch_id_to_copy: boolean;
+  touch_id_on_return: boolean;
 }
 
 const MIN_PASSWORD_CHARS = 8; // mirrors vault::MIN_PASSWORD_CHARS
@@ -23,6 +24,7 @@ let current: Settings = {
   lock_on_hide: false,
   hide_codes_from_accessibility: false,
   touch_id_to_copy: false,
+  touch_id_on_return: true,
 };
 
 /** Called after settings change, so the tiles can re-render. */
@@ -201,6 +203,9 @@ async function paintTouchId() {
   const copy = $<HTMLInputElement>("#s-touchcopy");
   copy.disabled = !status.enabled;
   copy.checked = status.enabled && current.touch_id_to_copy;
+  const onReturn = $<HTMLInputElement>("#s-touchreturn");
+  onReturn.disabled = !status.enabled;
+  onReturn.checked = status.enabled && current.touch_id_on_return;
 }
 
 function setupTouchId() {
@@ -241,6 +246,9 @@ function setupTouchId() {
   });
   $<HTMLInputElement>("#s-touchcopy").addEventListener("change", (e) =>
     save({ touch_id_to_copy: (e.target as HTMLInputElement).checked }),
+  );
+  $<HTMLInputElement>("#s-touchreturn").addEventListener("change", (e) =>
+    save({ touch_id_on_return: (e.target as HTMLInputElement).checked }),
   );
 }
 
