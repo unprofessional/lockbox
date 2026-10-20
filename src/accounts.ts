@@ -378,7 +378,7 @@ function openEdit(e: EntryMeta) {
   $<HTMLInputElement>("#e-account").value = e.account;
   $<HTMLInputElement>("#e-tags").value = e.tags.join(", ");
   $<HTMLElement>("#edit-error").textContent = "";
-  $<HTMLButtonElement>("#delete-btn").textContent = "Delete…";
+  showDeleteStep(false);
   $<HTMLDialogElement>("#edit-dialog").showModal();
   $<HTMLInputElement>("#e-issuer").focus();
 }
@@ -406,23 +406,32 @@ async function submitEdit(ev: SubmitEvent) {
   await refresh();
 }
 
-/** Two clicks: the first arms the button, the second deletes. */
-async function clickDelete() {
-  if (!editing) return;
-  const btn = $<HTMLButtonElement>("#delete-btn");
-  if (btn.dataset.armed !== "true") {
-    btn.dataset.armed = "true";
-    btn.textContent = "Delete permanently";
-    return;
+/** Swaps the edit form for a separate confirmation step (and back). */
+function showDeleteStep(confirming: boolean) {
+  $<HTMLElement>("#edit-form").hidden = confirming;
+  $<HTMLElement>("#delete-confirm").hidden = !confirming;
+  $<HTMLElement>("#delete-error").textContent = "";
+  if (confirming && editing) {
+    $<HTMLElement>("#delete-title").textContent = `Delete ${label(editing)}?`;
+    $<HTMLElement>("#delete-name").textContent = label(editing);
+    // The safe choice has focus, so Enter or a stray double-click keeps it.
+    $<HTMLButtonElement>("#delete-cancel").focus();
   }
+}
+
+async function confirmDelete(ev: SubmitEvent) {
+  ev.preventDefault();
+  if (!editing) return;
   try {
     await invoke("delete_entry", { id: editing.id });
   } catch (ex) {
-    $<HTMLElement>("#edit-error").textContent = errorText(ex);
+    $<HTMLElement>("#delete-error").textContent = errorText(ex);
     return;
   }
+  const name = label(editing);
   $<HTMLDialogElement>("#edit-dialog").close();
   await refresh();
+  toast(`Deleted ${name}`);
 }
 
 export function setupAccounts() {
@@ -473,13 +482,18 @@ export function setupAccounts() {
     showAddStep(false);
   });
   $<HTMLFormElement>("#edit-form").addEventListener("submit", submitEdit);
-  $<HTMLButtonElement>("#delete-btn").addEventListener("click", clickDelete);
+  $<HTMLButtonElement>("#delete-btn").addEventListener("click", () => showDeleteStep(true));
+  $<HTMLButtonElement>("#delete-cancel").addEventListener("click", () => {
+    showDeleteStep(false);
+    $<HTMLButtonElement>("#delete-btn").focus();
+  });
+  $<HTMLFormElement>("#delete-confirm").addEventListener("submit", confirmDelete);
   for (const d of document.querySelectorAll<HTMLDialogElement>("dialog")) {
     d.querySelectorAll("[data-close]").forEach((b) =>
       b.addEventListener("click", () => d.close()),
     );
     d.addEventListener("close", () => {
-      delete $<HTMLButtonElement>("#delete-btn").dataset.armed;
+      showDeleteStep(false);
       clearAddForm();
     });
   }

@@ -914,3 +914,44 @@ dialog.sheet.wide {
 #backup-msg {
   overflow-wrap: anywhere;
 }
+
+/* ---- delete confirmation (separate step in the edit dialog) ---- */
+
+dialog form.confirm {
+  align-items: center;
+  text-align: center;
+}
+
+.confirm-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  color: var(--accent);
+}
+
+.confirm-icon svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.confirm .lede {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.confirm .actions {
+  align-self: stretch;
+}
+
+button.danger.solid {
+  background: var(--accent);
+  color: var(--accent-text);
+  border: none;
+}
