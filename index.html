@@ -34,7 +34,7 @@
         <div class="warning" role="note">
           <strong>There is no password recovery.</strong>
           If you forget this password, the vault and every code in it are gone for good.
-          Use encrypted export (coming in M5) as your backup.
+          After adding accounts, export an encrypted backup from Settings → Backup and keep it somewhere safe.
         </div>
         <label class="check">
           <input id="ack" type="checkbox" />
@@ -58,6 +58,13 @@
         <input id="password" type="password" placeholder="Master password" spellcheck="false" />
         <button type="submit" id="unlock-btn">Unlock</button>
         <p id="unlock-msg" class="msg" role="status" aria-live="polite"></p>
+        <div id="recovery" class="warning recovery" hidden>
+          <strong>Your vault file couldn't be opened.</strong>
+          <span id="recovery-detail"></span>
+          lockbox keeps the previous version. Enter your master password above, then restore it. The damaged file is
+          kept aside, not deleted.
+          <button type="button" id="restore-btn" class="secondary small">Restore previous version</button>
+        </div>
       </form>
 
       <!-- Unlocked: tile grid of accounts (BRIEF §10) -->
@@ -110,7 +117,7 @@
               <span>otpauth:// link</span>
               <textarea id="uri" rows="3" spellcheck="false" placeholder="otpauth://totp/Service:you@example.com?secret=…"></textarea>
             </label>
-            <p class="hint">Most sites show this link under the QR code as "can't scan?" or "enter key manually". QR images arrive in M5.</p>
+            <p class="hint">Most sites show this link under the QR code as "can't scan?" or "enter key manually".</p>
           </div>
 
           <div id="pane-manual" hidden>
@@ -240,6 +247,19 @@
                 <option value="120">2 minutes</option>
               </select>
             </label>
+            <label class="check setting">
+              <input id="s-lockhide" type="checkbox" />
+              <span>Lock when lockbox is minimized or hidden</span>
+            </label>
+            <label class="check setting">
+              <input id="s-a11y" type="checkbox" />
+              <span>Hide codes from accessibility tools<br /><small>Stops screen readers and accessibility-driven
+                agents from reading codes. Turns off VoiceOver for codes too.</small></span>
+            </label>
+            <p class="hint">
+              lockbox also locks when your Mac sleeps or its screen locks, and with <kbd>⌃⌥⌘L</kbd> from any app.
+              Its window is hidden from screenshots and screen sharing.
+            </p>
             <p id="settings-msg" class="form-error" role="alert"></p>
           </section>
 

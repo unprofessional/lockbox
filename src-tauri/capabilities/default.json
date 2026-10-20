@@ -8,6 +8,7 @@
     "allow-is-locked",
     "allow-create-vault",
     "allow-unlock",
+    "allow-restore-backup",
     "allow-lock",
     "allow-change-password",
     "allow-list-entries",

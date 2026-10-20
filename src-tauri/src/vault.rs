@@ -661,6 +661,11 @@ fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
     f.sync_all()
 }
 
+/// The rolling backup next to the vault (`vault.enc.bak`).
+pub fn backup_path(vault: &Path) -> PathBuf {
+    sibling(vault, "bak")
+}
+
 /// `vault.enc` → `vault.enc.<suffix>`
 fn sibling(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.file_name().expect("vault path has a file name").to_os_string();

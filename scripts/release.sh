@@ -38,6 +38,9 @@ sh scripts/check-surface.sh
 step "cargo audit"
 cargo audit --file src-tauri/Cargo.lock --quiet
 
+step "cargo deny (advisories, licences, banned crates, sources)"
+cargo deny --manifest-path src-tauri/Cargo.toml check --hide-inclusion-graph
+
 step "Building release"
 bundles=app
 [ "$dmg" -eq 1 ] && bundles=app,dmg

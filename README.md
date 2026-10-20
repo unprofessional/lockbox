@@ -15,18 +15,19 @@ The full plan, scope and milestones are in [BRIEF.md](BRIEF.md).
 | M3 | Codes: add entries (manual, `otpauth://` paste), TOTP/HOTP generation | done |
 | M4 | UI parity: tile grid, copy with clipboard wipe, settings | done |
 | M5 | QR image import, encrypted export/import | in review |
-| M6 | Hardening: lock on sleep/hide, unlock backoff, panic hotkey, screen-capture exclusion | |
+| M6 | Hardening: lock on sleep/screen lock, panic hotkey, capture exclusion, password backoff, recovery | in review |
+| M6.1 | Touch ID unlock | next |
 
 Right now you can create a vault and add accounts from a screenshot of the QR code (drop, paste or pick it), by pasting an `otpauth://` link, or by typing the secret. Accounts show as a tile grid with live codes, for both time-based and counter-based accounts. Click a tile to copy its code. You can search, edit or delete accounts, and export or import encrypted backups. Settings cover the theme, lock after inactivity, how long copied codes stay on the clipboard, changing the master password, backups, and checking for updates.
 
-Shortcuts: ⌘N add, ⌘F search, ⌘, settings, ⌘L lock.
+Shortcuts: ⌘N add, ⌘F search, ⌘, settings, ⌘L lock, and ⌃⌥⌘L to lock from any app.
 
 ## Threat model
 
 **Protects against:**
 
 - A stolen laptop or lost disk: the vault is encrypted at rest.
-- Shoulder-surfing: codes are hidden until you unlock, and lockbox locks itself after a set time without activity. Locking on sleep and when the window is hidden comes in M6.
+- Shoulder-surfing: codes are hidden until you unlock. lockbox locks itself after a set time without activity, when your Mac sleeps or its screen locks, and when you press ⌃⌥⌘L from any app. Optionally it also locks when minimized or hidden.
 - Clipboard snooping: copied codes are wiped after a timeout, kept out of clipboard-manager history, and never synced to other devices through Universal Clipboard.
 - A compromised webview: no secret crosses IPC; the webview only gets codes for the current 30-second window.
 - Leaked backups: backups are always encrypted with your master password; there is no plain-text export.
@@ -41,12 +42,11 @@ Shortcuts: ⌘N add, ⌘F search, ⌘, settings, ⌘L lock.
 
 **Desktop automation agents.** AI agents that you grant Screen Recording and Accessibility permission can take screenshots of your desktop, read on-screen text through macOS accessibility, and click and type. Treat them like a tireless person looking over your shoulder.
 
-- **Screenshots:** hiding the window from screen capture (M6) blanks lockbox in screenshots.
-- **Unlock guessing:** a backoff on wrong passwords (M6) slows guessing through the unlock screen. It can't stop someone who quits and relaunches the app, and it does nothing against an attacker who has a copy of `vault.enc`. Against that attacker, Argon2id and a strong password are what count.
-- **Not covered yet:**
-  - Codes on screen are still readable through accessibility while the vault is unlocked.
-  - An agent could click a tile to copy a code.
-- **What would close the gap:** Touch ID (planned for v1.1). Synthetic clicks and keystrokes can't fake a fingerprint.
+- **Screenshots:** the window is excluded from screen capture, so screenshots, recordings and screen sharing show it blank. That includes your own screenshots of lockbox.
+- **Password guessing:** after 5 wrong master passwords, each further attempt waits longer (1 s, 2 s, 4 s… up to 30 s). Every password prompt shares this counter: unlock, change password, export, update and restore. It resets when the app restarts and does nothing against an attacker who has a copy of `vault.enc`. Against that attacker, Argon2id and a strong password are what count.
+- **Accessibility:** by default, codes on screen are readable through accessibility while the vault is unlocked, so VoiceOver works. **Settings → Hide codes from accessibility tools** removes them from the accessibility tree.
+- **Not covered yet:** an agent could click a tile to copy a code.
+- **What would close the gap:** Touch ID (M6.1). Synthetic clicks and keystrokes can't fake a fingerprint.
 - **Your own control:** be deliberate about which apps hold Screen Recording and Accessibility permission.
 
 **The in-app updater** lets an unlocked session build and install `master`. Installing requires re-entering the master password, so clicks alone can't install new code. Anyone who can push to `master` on GitHub can ship code to this laptop the next time you update, so treat push access to `master` like access to your vault.
@@ -57,7 +57,7 @@ Shortcuts: ⌘N add, ⌘F search, ⌘, settings, ⌘L lock.
 - Rust stable (currently 1.99.1). Tauri 2.12 needs a newer Rust than 1.89, so run `rustup update stable` if a build complains about versions.
 - Node 22+ and npm.
 - Xcode command line tools.
-- `cargo-audit` for the release checks: `cargo install cargo-audit --locked`.
+- `cargo-audit` and `cargo-deny` for the release checks: `cargo install cargo-audit cargo-deny --locked`.
 
 ## Develop
 
@@ -85,13 +85,19 @@ sh scripts/check-surface.sh
 cargo audit --file src-tauri/Cargo.lock
 ```
 
+```bash
+cargo deny --manifest-path src-tauri/Cargo.toml check
+```
+
+[deny.toml](src-tauri/deny.toml) allows only crates.io sources and a fixed licence list (permissive licences plus MPL-2.0), and bans networking crates.
+
 ## Build and install
 
 ```bash
 npm run release
 ```
 
-This is the whole release loop, run on this Mac. [scripts/release.sh](scripts/release.sh) runs the Rust tests, the surface check and `cargo audit`. If they all pass, it builds the app, installs it to `/Applications/lockbox.app` (quitting the running copy first) and relaunches it. If any check fails, nothing is installed. Your vault isn't touched; it lives in `~/Library/Application Support/lockbox`.
+This is the whole release loop, run on this Mac. [scripts/release.sh](scripts/release.sh) runs the Rust tests, the surface check, `cargo audit` and `cargo deny`. If they all pass, it builds the app, installs it to `/Applications/lockbox.app` (quitting the running copy first) and relaunches it. If any check fails, nothing is installed. Your vault isn't touched; it lives in `~/Library/Application Support/lockbox`.
 
 Options:
 
@@ -171,6 +177,15 @@ There is deliberately no plain-text export.
 
 On the **QR image** tab of **+ Add**, drop a screenshot, paste one with ⌘V, or choose a file. PNG and JPEG are supported, up to 20 MB and 8000 px per side. The image goes to Rust as raw bytes, where [qr.rs](src-tauri/src/qr.rs) decodes it with `rqrr`. Only the account preview comes back to the webview, never the decoded link.
 
+### Hardening (M6)
+
+- **Locking:** lockbox locks when the Mac sleeps, its displays sleep, the screen locks, the screensaver starts, or another user takes over. [system.rs](src-tauri/src/system.rs) listens for these through macOS's own notifications. The UI notices within a second, because Rust starts refusing its requests for codes, so the webview needs no extra permission.
+- **Panic hotkey:** ⌃⌥⌘L locks lockbox from any app. It uses macOS's built-in global hotkey API, which needs no Accessibility permission. If another app already uses the combination, lockbox logs that and carries on.
+- **Hidden from capture:** screenshots, recordings and screen sharing show the window blank.
+- **Password backoff:** see the threat model above.
+- **Recovery:** if `vault.enc` is damaged but `vault.enc.bak` opens, the unlock screen offers **Restore previous version**. The damaged file is kept aside as `vault.enc.damaged-<time>`, not deleted.
+- **On quit:** a copied code still on the clipboard is wiped.
+
 ### Copying codes
 
 Clicking a tile asks Rust to copy its code (`copy_code`). Counter-based (HOTP) tiles get their next code. The webview never touches the clipboard and has no permission to.
@@ -189,7 +204,8 @@ These are the only commands the webview can call. Each one is declared in [build
 | `vault_exists` | yes |
 | `is_locked` | yes |
 | `create_vault(password)` | yes |
-| `unlock(password)` | yes |
+| `unlock(password)` | yes (returns the backoff wait and whether a damaged vault can be restored) |
+| `restore_backup(password)` | yes (recovery from `vault.enc.bak`) |
 | `lock` | yes |
 | `settings_get` | yes (the lock screen needs the theme) |
 | `settings_set(settings)` | no |

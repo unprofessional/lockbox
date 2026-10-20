@@ -9,11 +9,23 @@ export interface Settings {
   auto_lock_minutes: number;
   clipboard_wipe_seconds: number;
   theme: Theme;
+  lock_on_hide: boolean;
+  hide_codes_from_accessibility: boolean;
 }
 
 const MIN_PASSWORD_CHARS = 8; // mirrors vault::MIN_PASSWORD_CHARS
 
-let current: Settings = { auto_lock_minutes: 5, clipboard_wipe_seconds: 30, theme: "system" };
+let current: Settings = {
+  auto_lock_minutes: 5,
+  clipboard_wipe_seconds: 30,
+  theme: "system",
+  lock_on_hide: false,
+  hide_codes_from_accessibility: false,
+};
+
+/** Called after settings change, so the tiles can re-render. */
+let onChange: () => void = () => {};
+export const onSettingsChange = (f: () => void) => (onChange = f);
 
 export const getSettings = () => current;
 
@@ -46,6 +58,8 @@ function populate() {
   $<HTMLSelectElement>("#s-theme").value = current.theme;
   selectValue($<HTMLSelectElement>("#s-autolock"), current.auto_lock_minutes, `${current.auto_lock_minutes} minutes`);
   selectValue($<HTMLSelectElement>("#s-wipe"), current.clipboard_wipe_seconds, `${current.clipboard_wipe_seconds} seconds`);
+  $<HTMLInputElement>("#s-lockhide").checked = current.lock_on_hide;
+  $<HTMLInputElement>("#s-a11y").checked = current.hide_codes_from_accessibility;
   $<HTMLElement>("#settings-msg").textContent = "";
 }
 
@@ -53,6 +67,7 @@ async function save(patch: Partial<Settings>) {
   try {
     current = await invoke<Settings>("settings_set", { settings: { ...current, ...patch } });
     applyTheme(current.theme);
+    onChange();
     $<HTMLElement>("#settings-msg").textContent = "";
   } catch (err) {
     $<HTMLElement>("#settings-msg").textContent = errorText(err);
@@ -180,6 +195,12 @@ export function setupSettings() {
   );
   $<HTMLSelectElement>("#s-wipe").addEventListener("change", (e) =>
     save({ clipboard_wipe_seconds: Number((e.target as HTMLSelectElement).value) }),
+  );
+  $<HTMLInputElement>("#s-lockhide").addEventListener("change", (e) =>
+    save({ lock_on_hide: (e.target as HTMLInputElement).checked }),
+  );
+  $<HTMLInputElement>("#s-a11y").addEventListener("change", (e) =>
+    save({ hide_codes_from_accessibility: (e.target as HTMLInputElement).checked }),
   );
 
   const form = $<HTMLFormElement>("#pw-form");

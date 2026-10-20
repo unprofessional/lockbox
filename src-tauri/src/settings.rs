@@ -23,6 +23,11 @@ pub struct Settings {
     pub auto_lock_minutes: u32,
     pub clipboard_wipe_seconds: u32,
     pub theme: Theme,
+    /// Lock when the window is minimized or the app is hidden (M6).
+    pub lock_on_hide: bool,
+    /// Keep codes out of the accessibility tree, so screen readers and
+    /// accessibility-driven agents can't read them (M6, BRIEF §9).
+    pub hide_codes_from_accessibility: bool,
 }
 
 impl Default for Settings {
@@ -31,6 +36,8 @@ impl Default for Settings {
             auto_lock_minutes: 5,
             clipboard_wipe_seconds: 30,
             theme: Theme::System,
+            lock_on_hide: false,
+            hide_codes_from_accessibility: false,
         }
     }
 }
@@ -98,6 +105,8 @@ mod tests {
             auto_lock_minutes: 15,
             clipboard_wipe_seconds: 10,
             theme: Theme::Dark,
+            lock_on_hide: true,
+            hide_codes_from_accessibility: true,
         };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);
@@ -126,6 +135,7 @@ mod tests {
         assert_eq!(s.theme, Theme::Light);
         assert_eq!(s.auto_lock_minutes, 5);
         assert_eq!(s.clipboard_wipe_seconds, 30);
+        assert!(!s.lock_on_hide && !s.hide_codes_from_accessibility, "M4-era files get the M6 defaults");
     }
 
     #[test]

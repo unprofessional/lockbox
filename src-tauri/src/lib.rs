@@ -1,8 +1,10 @@
+mod backoff;
 mod clipboard;
 mod otp;
 mod panel;
 mod qr;
 mod settings;
+mod system;
 mod update;
 mod vault;
 
@@ -13,6 +15,7 @@ use settings::Settings;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{AppHandle, Manager, Runtime, State};
 use vault::{Entry, EntryMeta, ImportSummary, KdfParams, Vault, VaultError};
@@ -30,6 +33,8 @@ struct AppState {
     /// A backup file the user picked, waiting for its password. Encrypted,
     /// but cleared on lock all the same.
     pending_import: Mutex<Option<(String, Vec<u8>)>>,
+    /// Shared by every master-password check (BRIEF §9, M6).
+    backoff: Mutex<backoff::Backoff>,
     /// Our latest clipboard write, so locking can clear it if it's still there.
     last_copy: Mutex<Option<clipboard::Stamp>>,
     /// Bundled update-helper.sh; the only thing the app may run.
@@ -102,30 +107,158 @@ async fn create_vault(state: State<'_, AppState>, password: String) -> Result<bo
     Ok(true)
 }
 
-/// `Ok(false)` for a wrong password; `Err` for anything else (missing,
-/// tampered or unreadable vault).
+#[derive(Serialize, Default, Debug)]
+struct UnlockOutcome {
+    unlocked: bool,
+    /// Seconds before another password may be tried (backoff), 0 if none.
+    retry_after_secs: u64,
+    /// The vault file couldn't be opened for a reason other than the password.
+    problem: Option<String>,
+    /// `problem` is one that restoring vault.enc.bak may fix.
+    can_restore: bool,
+}
+
+const TOO_MANY: &str = "Too many wrong passwords.";
+
+fn wait_message(wait: u64) -> String {
+    format!("{TOO_MANY} Try again in {wait} s.")
+}
+
+/// Runs one password check under the shared backoff: refuses while waiting,
+/// counts wrong passwords, resets on a right one.
+fn guarded_check<T>(
+    state: &AppState,
+    check: impl FnOnce() -> Result<T, VaultError>,
+) -> Result<Result<T, VaultError>, u64> {
+    let wait = state.backoff.lock().unwrap().wait_secs(Instant::now());
+    if wait > 0 {
+        return Err(wait);
+    }
+    let result = check();
+    let mut backoff = state.backoff.lock().unwrap();
+    match &result {
+        Ok(_) => backoff.record_success(),
+        Err(VaultError::WrongPassword) => backoff.record_failure(Instant::now()),
+        Err(_) => {}
+    }
+    Ok(result)
+}
+
+/// Checks the master password against the unlocked vault (export, update).
+fn check_master(state: &AppState, vault: &Vault, password: &str) -> Result<(), String> {
+    match guarded_check(state, || vault.verify_password(password)) {
+        Err(wait) => Err(wait_message(wait)),
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(VaultError::WrongPassword)) => Err("Wrong password.".into()),
+        Ok(Err(e)) => Err(e.to_string()),
+    }
+}
+
+/// A wrong password, a backoff wait and a damaged vault all come back as an
+/// `UnlockOutcome`; `Err` is only for unexpected I/O failures.
 #[tauri::command]
-async fn unlock(state: State<'_, AppState>, password: String) -> Result<bool, String> {
+async fn unlock(state: State<'_, AppState>, password: String) -> Result<UnlockOutcome, String> {
     let password = Zeroizing::new(password);
-    match Vault::unlock(&state.vault_path, &password) {
+    open_vault(&state, &state.vault_path, &password)
+}
+
+fn open_vault(
+    state: &AppState,
+    path: &std::path::Path,
+    password: &str,
+) -> Result<UnlockOutcome, String> {
+    let result = match guarded_check(state, || Vault::unlock(path, password)) {
+        Err(wait) => {
+            return Ok(UnlockOutcome {
+                retry_after_secs: wait,
+                ..Default::default()
+            });
+        }
+        Ok(result) => result,
+    };
+    match result {
         Ok(vault) => {
             *state.vault.lock().unwrap() = Some(vault);
-            Ok(true)
+            Ok(UnlockOutcome {
+                unlocked: true,
+                ..Default::default()
+            })
         }
-        Err(VaultError::WrongPassword) => Ok(false),
+        Err(VaultError::WrongPassword) => Ok(UnlockOutcome {
+            retry_after_secs: state.backoff.lock().unwrap().wait_secs(Instant::now()),
+            ..Default::default()
+        }),
+        Err(e @ (VaultError::Tampered | VaultError::Corrupt(_))) => Ok(UnlockOutcome {
+            problem: Some(e.to_string()),
+            can_restore: vault::backup_path(&state.vault_path).exists(),
+            ..Default::default()
+        }),
+        Err(e @ VaultError::UnsupportedVersion(_)) => Ok(UnlockOutcome {
+            problem: Some(format!("{e}. This vault was saved by a newer lockbox; update the app.")),
+            ..Default::default()
+        }),
         Err(e) => Err(e.to_string()),
     }
 }
 
-/// Also clears a copied code still on the clipboard.
+/// Recovery when vault.enc is damaged (M6): opens vault.enc.bak with the
+/// password and, if that works, keeps the damaged file aside as
+/// vault.enc.damaged-<time> and promotes the backup. Allowed while locked;
+/// shares the password backoff.
 #[tauri::command]
-fn lock(state: State<'_, AppState>) {
+async fn restore_backup(state: State<'_, AppState>, password: String) -> Result<UnlockOutcome, String> {
+    let password = Zeroizing::new(password);
+    let bak = vault::backup_path(&state.vault_path);
+    if !bak.exists() {
+        return Err("There's no previous version to restore.".into());
+    }
+    match guarded_check(&state, || Vault::unlock(&bak, &password).map(drop)) {
+        Err(wait) => {
+            return Ok(UnlockOutcome {
+                retry_after_secs: wait,
+                ..Default::default()
+            });
+        }
+        Ok(Err(VaultError::WrongPassword)) => {
+            return Ok(UnlockOutcome {
+                retry_after_secs: state.backoff.lock().unwrap().wait_secs(Instant::now()),
+                ..Default::default()
+            });
+        }
+        Ok(Err(e)) => {
+            return Ok(UnlockOutcome {
+                problem: Some(format!("The previous version can't be opened either: {e}")),
+                ..Default::default()
+            });
+        }
+        Ok(Ok(())) => {}
+    }
+    let damaged = state
+        .vault_path
+        .with_file_name(format!("vault.enc.damaged-{}", now()));
+    if state.vault_path.exists() {
+        std::fs::rename(&state.vault_path, &damaged)
+            .map_err(|e| format!("couldn't set the damaged vault aside: {e}"))?;
+    }
+    std::fs::copy(&bak, &state.vault_path).map_err(|e| format!("couldn't restore the backup: {e}"))?;
+    open_vault(&state, &state.vault_path, &password)
+}
+
+/// Locks: drops the vault (zeroizing it), any pending add or import, and a
+/// copied code still on the clipboard. Used by the Lock button, idle and
+/// hide locking, system events and the panic hotkey.
+fn do_lock(state: &AppState) {
     state.pending.lock().unwrap().take();
     state.pending_import.lock().unwrap().take();
     state.vault.lock().unwrap().take();
     if let Some(stamp) = state.last_copy.lock().unwrap().take() {
         clipboard::clear_if_unchanged(stamp);
     }
+}
+
+#[tauri::command]
+fn lock(state: State<'_, AppState>) {
+    do_lock(&state);
 }
 
 /// `Ok(false)` if `old` is wrong.
@@ -138,10 +271,11 @@ async fn change_password(
     let (old, new) = (Zeroizing::new(old), Zeroizing::new(new));
     let mut guard = state.vault.lock().unwrap();
     let vault = guard.as_mut().ok_or(LOCKED)?;
-    match vault.change_password(&old, &new) {
-        Ok(()) => Ok(true),
-        Err(VaultError::WrongPassword) => Ok(false),
-        Err(e) => Err(e.to_string()),
+    match guarded_check(&state, || vault.change_password(&old, &new)) {
+        Err(wait) => Err(wait_message(wait)),
+        Ok(Ok(())) => Ok(true),
+        Ok(Err(VaultError::WrongPassword)) => Ok(false),
+        Ok(Err(e)) => Err(e.to_string()),
     }
 }
 
@@ -346,10 +480,7 @@ async fn export_backup<R: Runtime>(
     let (bytes, accounts) = {
         let guard = state.vault.lock().unwrap();
         let vault = guard.as_ref().ok_or(LOCKED)?;
-        vault.verify_password(&password).map_err(|e| match e {
-            VaultError::WrongPassword => "Wrong password.".to_string(),
-            e => e.to_string(),
-        })?;
+        check_master(&state, vault, &password)?;
         (vault.export_bytes().map_err(|e| e.to_string())?, vault.entries().len())
     };
     let name = format!("lockbox-backup-{}.lockbox", today());
@@ -473,10 +604,7 @@ fn with_update_slot<T>(
         let guard = state.vault.lock().unwrap();
         let vault = guard.as_ref().ok_or(LOCKED)?;
         if let Some(pw) = password {
-            vault.verify_password(pw).map_err(|e| match e {
-                VaultError::WrongPassword => "Wrong password.".to_string(),
-                e => e.to_string(),
-            })?;
+            check_master(state, vault, pw)?;
         }
     }
     if state.update_busy.swap(true, Ordering::SeqCst) {
@@ -514,6 +642,7 @@ fn app_state(dir: PathBuf, update_helper: PathBuf) -> AppState {
         vault: Mutex::new(None),
         pending: Mutex::new(None),
         pending_import: Mutex::new(None),
+        backoff: Mutex::new(backoff::Backoff::default()),
         last_copy: Mutex::new(None),
         update_helper,
         update_busy: AtomicBool::new(false),
@@ -532,6 +661,17 @@ pub fn run() {
                 .join("Library/Application Support/lockbox");
             let helper = app.path().resource_dir()?.join(update::HELPER);
             app.manage(app_state(dir, helper));
+
+            // M6 hardening hooks (src/system.rs).
+            let handle = app.handle().clone();
+            system::lock_on_system_events(move || do_lock(&handle.state::<AppState>()));
+            let handle = app.handle().clone();
+            if let Err(e) = system::register_panic_hotkey(move || do_lock(&handle.state::<AppState>())) {
+                eprintln!("lockbox: panic hotkey unavailable: {e}");
+            }
+            if let Some(window) = app.get_webview_window("main") {
+                system::hide_from_capture(&window)?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -539,6 +679,7 @@ pub fn run() {
             is_locked,
             create_vault,
             unlock,
+            restore_backup,
             lock,
             change_password,
             list_entries,
@@ -560,8 +701,16 @@ pub fn run() {
             update_check,
             update_install
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Quitting shouldn't leave a copied code behind (M6).
+            if let tauri::RunEvent::Exit = event {
+                if let Some(stamp) = app.state::<AppState>().last_copy.lock().unwrap().take() {
+                    clipboard::clear_if_unchanged(stamp);
+                }
+            }
+        });
 }
 
 /// IPC contract (BRIEF §12): every command is classified, and every command
@@ -578,6 +727,7 @@ mod contract_tests {
         "is_locked",
         "create_vault",
         "unlock",
+        "restore_backup",
         "lock",
         "settings_get",
         "app_info",
@@ -709,6 +859,95 @@ mod contract_tests {
         let err = block_on(import_confirm(s(), token, "backup password".into())).unwrap_err();
         assert!(err.contains("isn't a lockbox backup"), "{err}");
         assert_eq!(list_entries(s()).unwrap().len(), 1);
+    }
+
+    const PW: &str = "correct horse battery";
+
+    fn create(dir: &std::path::Path) -> Vault {
+        Vault::create(&dir.join("vault.enc"), PW, KdfParams { m_kib: 64, t: 1, p: 1 }).unwrap()
+    }
+
+    #[test]
+    fn wrong_passwords_back_off_across_every_check() {
+        let dir = tempfile::tempdir().unwrap();
+        create(dir.path());
+        let app = app(dir.path());
+        let s = || app.state::<AppState>();
+
+        for _ in 0..backoff::FREE_ATTEMPTS {
+            let o = block_on(unlock(s(), "nope".into())).unwrap();
+            assert!(!o.unlocked);
+            assert_eq!(o.retry_after_secs, 0, "free attempts");
+        }
+        let o = block_on(unlock(s(), "nope".into())).unwrap();
+        assert_eq!(o.retry_after_secs, 1, "6th wrong password starts the wait");
+        // Even the right password is refused while waiting.
+        let o = block_on(unlock(s(), PW.into())).unwrap();
+        assert!(!o.unlocked && o.retry_after_secs >= 1);
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        assert!(block_on(unlock(s(), PW.into())).unwrap().unlocked, "right password resets");
+
+        // Unlocked: export and change password share the same counter.
+        for _ in 0..backoff::FREE_ATTEMPTS {
+            let err = block_on(export_backup(app.handle().clone(), s(), "nope".into())).err().unwrap();
+            assert_eq!(err, "Wrong password.");
+        }
+        assert_eq!(block_on(change_password(s(), "nope".into(), "another password".into())), Ok(false));
+        let err = block_on(export_backup(app.handle().clone(), s(), PW.into())).err().unwrap();
+        assert!(err.starts_with(TOO_MANY), "{err}");
+        let err = block_on(change_password(s(), PW.into(), "another password".into())).unwrap_err();
+        assert!(err.starts_with(TOO_MANY), "{err}");
+    }
+
+    #[test]
+    fn damaged_vault_can_be_restored_from_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = create(dir.path());
+        v.add(&otp::parse_uri(URI).unwrap(), None).unwrap(); // second save → .bak exists
+        drop(v);
+        let path = dir.path().join("vault.enc");
+        std::fs::write(&path, b"{ damaged").unwrap();
+
+        let app = app(dir.path());
+        let s = || app.state::<AppState>();
+        let o = block_on(unlock(s(), PW.into())).unwrap();
+        assert!(!o.unlocked && o.can_restore, "{o:?}");
+        assert!(o.problem.unwrap().contains("unreadable"));
+
+        let o = block_on(restore_backup(s(), "nope".into())).unwrap();
+        assert!(!o.unlocked, "wrong password restores nothing");
+        assert_eq!(std::fs::read(&path).unwrap(), b"{ damaged");
+
+        let o = block_on(restore_backup(s(), PW.into())).unwrap();
+        assert!(o.unlocked, "{o:?}");
+        assert!(!is_locked(s()));
+        // The backup was taken before the add, so the vault is empty again.
+        assert_eq!(list_entries(s()).unwrap().len(), 0);
+        let kept: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.starts_with("vault.enc.damaged-"))
+            .collect();
+        assert_eq!(kept.len(), 1, "damaged file kept aside");
+        // And the restored vault opens normally afterwards.
+        lock(s());
+        assert!(block_on(unlock(s(), PW.into())).unwrap().unlocked);
+    }
+
+    #[test]
+    fn lock_clears_pending_state() {
+        let dir = tempfile::tempdir().unwrap();
+        create(dir.path());
+        let app = app(dir.path());
+        let s = || app.state::<AppState>();
+        assert!(block_on(unlock(s(), PW.into())).unwrap().unlocked);
+        entry_preview_uri(s(), URI.into()).unwrap();
+        stage_import_bytes(&s(), b"{}".to_vec()).unwrap();
+        do_lock(&s());
+        assert!(s().pending.lock().unwrap().is_none());
+        assert!(s().pending_import.lock().unwrap().is_none());
+        assert!(is_locked(s()));
     }
 
     #[test]

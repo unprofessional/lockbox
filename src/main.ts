@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import { setupAccounts, startAccounts, stopAccounts } from "./accounts";
+import { onLockedElsewhere, setupAccounts, startAccounts, stopAccounts } from "./accounts";
 import { getSettings, loadSettings, openSettings, setupSettings } from "./settings";
-import { $, errorText, shake } from "./ui";
+import { $, errorText, shake, toast } from "./ui";
 
 const MIN_PASSWORD_CHARS = 8; // mirrors vault::MIN_PASSWORD_CHARS
 
@@ -89,36 +89,97 @@ function setupCreate() {
   });
 }
 
+interface UnlockOutcome {
+  unlocked: boolean;
+  retry_after_secs: number;
+  problem: string | null;
+  can_restore: boolean;
+}
+
+let countdown: number | undefined;
+
+/** Disables Unlock and counts down while the password backoff runs. */
+function waitBeforeRetry(secs: number) {
+  const btn = $<HTMLButtonElement>("#unlock-btn");
+  const msg = $<HTMLElement>("#unlock-msg");
+  window.clearInterval(countdown);
+  let left = secs;
+  const paint = () => {
+    btn.disabled = left > 0;
+    btn.textContent = left > 0 ? `Try again in ${left} s` : "Unlock";
+    msg.textContent = left > 0 ? "Too many wrong passwords." : "";
+  };
+  paint();
+  countdown = window.setInterval(() => {
+    left -= 1;
+    paint();
+    if (left <= 0) {
+      window.clearInterval(countdown);
+      $<HTMLInputElement>("#password").focus();
+    }
+  }, 1000);
+}
+
 function setupUnlock() {
   const form = screens.unlock;
   const pw = $<HTMLInputElement>("#password");
   const btn = $<HTMLButtonElement>("#unlock-btn");
   const msg = $<HTMLElement>("#unlock-msg");
+  const recovery = $<HTMLElement>("#recovery");
 
-  form.addEventListener("submit", async (e) => {
-    e.preventDefault();
+  /** Shared by Unlock and Restore previous version. */
+  async function attempt(command: "unlock" | "restore_backup", busyLabel: string) {
     if (!pw.value || btn.disabled) return;
     btn.disabled = true;
-    btn.textContent = "Unlocking…";
+    btn.textContent = busyLabel;
     msg.textContent = "";
+    let outcome: UnlockOutcome;
     try {
-      const ok = await invoke<boolean>("unlock", { password: pw.value });
-      pw.value = "";
-      if (ok) {
-        show("vault");
-      } else {
-        msg.textContent = "Wrong password.";
-        shake(form);
-        pw.focus();
-      }
+      outcome = await invoke<UnlockOutcome>(command, { password: pw.value });
     } catch (err) {
-      pw.value = "";
       msg.textContent = errorText(err);
       shake(form);
-    } finally {
       btn.disabled = false;
       btn.textContent = "Unlock";
+      return;
+    } finally {
+      pw.value = "";
     }
+    btn.disabled = false;
+    btn.textContent = "Unlock";
+    if (outcome.unlocked) {
+      recovery.hidden = true;
+      if (command === "restore_backup") toast("Restored the previous version of your vault");
+      show("vault");
+      return;
+    }
+    if (outcome.problem) {
+      msg.textContent = "";
+      $<HTMLElement>("#recovery-detail").textContent = `(${outcome.problem}.)`;
+      $<HTMLElement>("#restore-btn").hidden = !outcome.can_restore;
+      recovery.hidden = false;
+      pw.focus();
+      return;
+    }
+    shake(form);
+    if (outcome.retry_after_secs > 0) {
+      waitBeforeRetry(outcome.retry_after_secs);
+    } else {
+      msg.textContent = "Wrong password.";
+      pw.focus();
+    }
+  }
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    void attempt("unlock", "Unlocking…");
+  });
+  $<HTMLButtonElement>("#restore-btn").addEventListener("click", () => {
+    if (!pw.value) {
+      msg.textContent = "Enter your master password first.";
+      return pw.focus();
+    }
+    void attempt("restore_backup", "Restoring…");
   });
 }
 
@@ -153,9 +214,23 @@ function showUpdateError(text: string) {
 
 async function lockNow() {
   await invoke("lock");
+  showLocked("");
+}
+
+/** Shows the lock screen; `reason` explains a lock the user didn't click. */
+function showLocked(reason: string) {
   resetUpdate();
-  $<HTMLElement>("#unlock-msg").textContent = "";
+  $<HTMLElement>("#unlock-msg").textContent = reason;
   show("unlock");
+}
+
+/** Locks the UI follows: sleep, screen lock and the panic hotkey happen in
+ * Rust; minimizing or hiding locks here when the setting is on. */
+function setupBackgroundLocks() {
+  onLockedElsewhere(() => showLocked("Locked."));
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && !screens.vault.hidden && getSettings().lock_on_hide) void lockNow();
+  });
 }
 
 /** Locks after the configured minutes without keyboard or mouse activity. */
@@ -273,6 +348,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   setupAccounts();
   setupSettings();
   setupIdleLock();
+  setupBackgroundLocks();
   void showBuildInfo();
   await loadSettings();
 

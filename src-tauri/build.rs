@@ -14,6 +14,7 @@ fn main() {
                 "is_locked",
                 "create_vault",
                 "unlock",
+                "restore_backup",
                 "lock",
                 "change_password",
                 "list_entries",
