@@ -27,7 +27,7 @@ allow = [
 confidence-threshold = 0.9
 
 [licenses.private]
-# lockbox itself is unpublished (publish = false) and needs no licence entry.
+# lockbox itself (0BSD) is unpublished (publish = false), so it's exempt here.
 ignore = true
 
 [bans]
