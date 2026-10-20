@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-import-stage"
+description = "Enables the import_stage command without any pre-configured scope."
+commands.allow = ["import_stage"]
+
+[[permission]]
+identifier = "deny-import-stage"
+description = "Denies the import_stage command without any pre-configured scope."
+commands.deny = ["import_stage"]

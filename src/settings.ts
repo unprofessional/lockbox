@@ -1,5 +1,6 @@
 // Settings sheet (BRIEF §10): theme, auto-lock, clipboard wipe, master password.
 import { invoke } from "@tauri-apps/api/core";
+import { refresh as refreshAccounts } from "./accounts";
 import { $, errorText, shake, toast } from "./ui";
 
 export type Theme = "system" | "light" | "dark";
@@ -64,14 +65,112 @@ function resetPasswordForm() {
   $<HTMLElement>("#pw-msg").textContent = "";
 }
 
+interface Exported {
+  path: string;
+  accounts: number;
+}
+
+interface ImportSummary {
+  added: number;
+  skipped: number;
+}
+
+let importToken: string | null = null;
+
+function resetBackup() {
+  importToken = null;
+  $<HTMLInputElement>("#export-password").value = "";
+  $<HTMLInputElement>("#import-password").value = "";
+  $<HTMLInputElement>("#import-file").value = "";
+  $<HTMLElement>("#import-step").hidden = true;
+  $<HTMLElement>("#backup-msg").textContent = "";
+}
+
+function plural(n: number, word: string) {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+function setupBackup() {
+  const msg = $<HTMLElement>("#backup-msg");
+
+  const exportForm = $<HTMLFormElement>("#export-form");
+  const exportBtn = $<HTMLButtonElement>("#export-btn");
+  exportForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const pw = $<HTMLInputElement>("#export-password");
+    if (!pw.value) return pw.focus();
+    exportBtn.disabled = true;
+    msg.textContent = "";
+    try {
+      // Rust re-checks the password, then shows the native save panel.
+      const r = await invoke<Exported | null>("export_backup", { password: pw.value });
+      pw.value = "";
+      if (r) {
+        msg.textContent = `Saved ${plural(r.accounts, "account")} to ${r.path}`;
+        toast("Backup saved");
+      }
+    } catch (err) {
+      msg.textContent = errorText(err);
+      shake(exportForm);
+    } finally {
+      exportBtn.disabled = false;
+    }
+  });
+
+  const importForm = $<HTMLFormElement>("#import-form");
+  const fileInput = $<HTMLInputElement>("#import-file");
+  const importBtn = $<HTMLButtonElement>("#import-btn");
+  $<HTMLButtonElement>("#import-pick").addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    msg.textContent = "";
+    try {
+      // Encrypted bytes go to Rust as a raw body and wait for the password.
+      importToken = await invoke<string>("import_stage", new Uint8Array(await file.arrayBuffer()));
+      $<HTMLElement>("#import-file-name").textContent = file.name;
+      $<HTMLElement>("#import-step").hidden = false;
+      $<HTMLInputElement>("#import-password").focus();
+    } catch (err) {
+      msg.textContent = errorText(err);
+    } finally {
+      fileInput.value = "";
+    }
+  });
+  importForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const pw = $<HTMLInputElement>("#import-password");
+    if (!importToken || !pw.value) return;
+    importBtn.disabled = true;
+    msg.textContent = "";
+    try {
+      const r = await invoke<ImportSummary>("import_confirm", { token: importToken, password: pw.value });
+      resetBackup();
+      msg.textContent =
+        `Added ${plural(r.added, "account")}` +
+        (r.skipped ? ` · ${r.skipped} already in your vault` : "") + ".";
+      toast(`Imported ${plural(r.added, "account")}`);
+      await refreshAccounts();
+    } catch (err) {
+      msg.textContent = errorText(err);
+      shake(importForm);
+    } finally {
+      pw.value = "";
+      importBtn.disabled = false;
+    }
+  });
+}
+
 export function openSettings() {
   populate();
   resetPasswordForm();
+  resetBackup();
   $<HTMLDialogElement>("#settings-dialog").showModal();
   $<HTMLSelectElement>("#s-theme").focus();
 }
 
 export function setupSettings() {
+  setupBackup();
   $<HTMLButtonElement>("#settings-btn").addEventListener("click", openSettings);
   $<HTMLSelectElement>("#s-theme").addEventListener("change", (e) =>
     save({ theme: (e.target as HTMLSelectElement).value as Theme }),

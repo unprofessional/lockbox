@@ -1,5 +1,7 @@
 mod clipboard;
 mod otp;
+mod panel;
+mod qr;
 mod settings;
 mod update;
 mod vault;
@@ -11,8 +13,9 @@ use settings::Settings;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{AppHandle, Manager, State};
-use vault::{Entry, EntryMeta, KdfParams, Vault, VaultError};
+use tauri::ipc::{InvokeBody, Request};
+use tauri::{AppHandle, Manager, Runtime, State};
+use vault::{Entry, EntryMeta, ImportSummary, KdfParams, Vault, VaultError};
 use zeroize::Zeroizing;
 
 struct AppState {
@@ -24,6 +27,9 @@ struct AppState {
     /// A parsed account waiting for the user to confirm its preview. Holds a
     /// seed, so it's cleared on lock.
     pending: Mutex<Option<Pending>>,
+    /// A backup file the user picked, waiting for its password. Encrypted,
+    /// but cleared on lock all the same.
+    pending_import: Mutex<Option<(String, Vec<u8>)>>,
     /// Our latest clipboard write, so locking can clear it if it's still there.
     last_copy: Mutex<Option<clipboard::Stamp>>,
     /// Bundled update-helper.sh; the only thing the app may run.
@@ -56,6 +62,18 @@ fn with_vault<T>(
     let mut guard = state.vault.lock().unwrap();
     let vault = guard.as_mut().ok_or(LOCKED)?;
     f(vault).map_err(|e| e.to_string())
+}
+
+fn token() -> String {
+    <[u8; 16]>::generate().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// File bytes sent as a raw invoke body (not JSON), e.g. `invoke(cmd, uint8Array)`.
+fn raw_body(request: &Request<'_>) -> Result<Vec<u8>, String> {
+    match request.body() {
+        InvokeBody::Raw(bytes) => Ok(bytes.clone()),
+        InvokeBody::Json(_) => Err("expected file contents".into()),
+    }
 }
 
 fn now() -> u64 {
@@ -103,6 +121,7 @@ async fn unlock(state: State<'_, AppState>, password: String) -> Result<bool, St
 #[tauri::command]
 fn lock(state: State<'_, AppState>) {
     state.pending.lock().unwrap().take();
+    state.pending_import.lock().unwrap().take();
     state.vault.lock().unwrap().take();
     if let Some(stamp) = state.last_copy.lock().unwrap().take() {
         clipboard::clear_if_unchanged(stamp);
@@ -217,7 +236,7 @@ fn stage(state: &AppState, parsed: Result<NewEntry, String>) -> Result<Preview, 
             Ok((entry, dup))
         });
     let (entry, duplicate) = duplicate?;
-    let token: String = <[u8; 16]>::generate().iter().map(|b| format!("{b:02x}")).collect();
+    let token = token();
     let preview = Preview {
         token: token.clone(),
         issuer: entry.issuer.clone(),
@@ -244,6 +263,20 @@ fn entry_preview_uri(state: State<'_, AppState>, uri: String) -> Result<Preview,
 #[tauri::command]
 fn entry_preview_manual(state: State<'_, AppState>, form: ManualForm) -> Result<Preview, String> {
     stage(&state, otp::from_manual(form))
+}
+
+/// Step 1 of adding from a QR screenshot: decode, parse and preview. The
+/// image arrives as a raw body; the decoded link never leaves Rust.
+#[tauri::command]
+fn entry_preview_qr(state: State<'_, AppState>, request: Request<'_>) -> Result<Preview, String> {
+    with_vault(&state, |_| Ok(()))?;
+    preview_qr_bytes(&state, &raw_body(&request)?)
+}
+
+fn preview_qr_bytes(state: &AppState, bytes: &[u8]) -> Result<Preview, String> {
+    with_vault(state, |_| Ok(()))?;
+    let uri = qr::decode(bytes)?;
+    stage(state, otp::parse_uri(&uri))
 }
 
 /// Step 2: save the previewed account. With `replace`, a duplicate is
@@ -290,6 +323,116 @@ async fn edit_entry(
 #[tauri::command]
 async fn delete_entry(state: State<'_, AppState>, id: String) -> Result<(), String> {
     with_vault(&state, |v| v.delete(&id))
+}
+
+// ---- backups (BRIEF §7): master-password-encrypted, vault.enc format ----
+
+#[derive(Serialize)]
+struct Exported {
+    path: String,
+    accounts: usize,
+}
+
+/// Re-checks the master password, then asks where to save via the native
+/// panel. `Ok(None)` if the user cancelled.
+#[tauri::command]
+async fn export_backup<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    password: String,
+) -> Result<Option<Exported>, String> {
+    let password = Zeroizing::new(password);
+    // Take what we need and release the vault before the (modal) panel opens.
+    let (bytes, accounts) = {
+        let guard = state.vault.lock().unwrap();
+        let vault = guard.as_ref().ok_or(LOCKED)?;
+        vault.verify_password(&password).map_err(|e| match e {
+            VaultError::WrongPassword => "Wrong password.".to_string(),
+            e => e.to_string(),
+        })?;
+        (vault.export_bytes().map_err(|e| e.to_string())?, vault.entries().len())
+    };
+    let name = format!("lockbox-backup-{}.lockbox", today());
+    let Some(path) = panel::choose_save_path(&app, &name)? else {
+        return Ok(None);
+    };
+    write_private(&path, &bytes).map_err(|e| format!("couldn't save the backup: {e}"))?;
+    Ok(Some(Exported {
+        path: path.display().to_string(),
+        accounts,
+    }))
+}
+
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+/// `YYYY-MM-DD` in UTC, for the default backup file name.
+fn today() -> String {
+    // Howard Hinnant's days-to-civil algorithm.
+    let z = (now() / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Step 1 of importing: hold the picked file until its password arrives.
+#[tauri::command]
+fn import_stage(state: State<'_, AppState>, request: Request<'_>) -> Result<String, String> {
+    with_vault(&state, |_| Ok(()))?;
+    stage_import_bytes(&state, raw_body(&request)?)
+}
+
+fn stage_import_bytes(state: &AppState, bytes: Vec<u8>) -> Result<String, String> {
+    with_vault(state, |_| Ok(()))?;
+    if bytes.len() > vault::MAX_BACKUP_BYTES {
+        return Err("That file is too large to be a lockbox backup.".into());
+    }
+    let token = token();
+    *state.pending_import.lock().unwrap() = Some((token.clone(), bytes));
+    Ok(token)
+}
+
+/// Step 2: decrypt with the password the backup was made with and merge in
+/// accounts that aren't already here. A wrong password keeps the file staged
+/// so the user can try again.
+#[tauri::command]
+async fn import_confirm(
+    state: State<'_, AppState>,
+    token: String,
+    password: String,
+) -> Result<ImportSummary, String> {
+    let password = Zeroizing::new(password);
+    with_vault(&state, |_| Ok(()))?;
+    let bytes = match &*state.pending_import.lock().unwrap() {
+        Some((t, bytes)) if *t == token => bytes.clone(),
+        _ => return Err("Pick the backup file again.".into()),
+    };
+    let entries = vault::read_backup(&bytes, &password).map_err(|e| match e {
+        VaultError::WrongPassword => "Wrong password for this backup. Use the master password you had when you made it.".to_string(),
+        VaultError::Tampered => "This backup failed its integrity check. It has been modified or damaged.".to_string(),
+        VaultError::Corrupt(_) | VaultError::UnsupportedVersion(_) => "That file isn't a lockbox backup, or it's damaged.".to_string(),
+        e => e.to_string(),
+    })?;
+    let summary = with_vault(&state, |v| v.import(entries))?;
+    state.pending_import.lock().unwrap().take();
+    Ok(summary)
 }
 
 // ---- settings ----
@@ -370,6 +513,7 @@ fn app_state(dir: PathBuf, update_helper: PathBuf) -> AppState {
         vault_path: dir.join("vault.enc"),
         vault: Mutex::new(None),
         pending: Mutex::new(None),
+        pending_import: Mutex::new(None),
         last_copy: Mutex::new(None),
         update_helper,
         update_busy: AtomicBool::new(false),
@@ -403,9 +547,13 @@ pub fn run() {
             copy_code,
             entry_preview_uri,
             entry_preview_manual,
+            entry_preview_qr,
             entry_confirm,
             edit_entry,
             delete_entry,
+            export_backup,
+            import_stage,
+            import_confirm,
             settings_get,
             settings_set,
             app_info,
@@ -443,9 +591,13 @@ mod contract_tests {
         "copy_code",
         "entry_preview_uri",
         "entry_preview_manual",
+        "entry_preview_qr",
         "entry_confirm",
         "edit_entry",
         "delete_entry",
+        "export_backup",
+        "import_stage",
+        "import_confirm",
         "settings_set",
         "update_check",
         "update_install",
@@ -511,7 +663,13 @@ mod contract_tests {
         locked("copy_code", block_on(copy_code(s(), "x".into())));
         locked("entry_preview_uri", entry_preview_uri(s(), URI.into()));
         locked("entry_preview_manual", entry_preview_manual(s(), form()));
+        // Raw-body commands can't be built outside a webview; their first step
+        // is the same guarded helper exercised here.
+        locked("entry_preview_qr", preview_qr_bytes(&s(), b"png"));
         locked("entry_confirm", block_on(entry_confirm(s(), "t".into(), false)));
+        locked("export_backup", block_on(export_backup(app.handle().clone(), s(), pw())));
+        locked("import_stage", stage_import_bytes(&s(), b"{}".to_vec()));
+        locked("import_confirm", block_on(import_confirm(s(), "t".into(), pw())));
         locked(
             "edit_entry",
             block_on(edit_entry(s(), "x".into(), "a".into(), "b".into(), vec![])),
@@ -520,7 +678,44 @@ mod contract_tests {
         locked("settings_set", settings_set(s(), Settings::default()));
         locked("update_check", block_on(update_check(s())));
         locked("update_install", block_on(update_install(s(), pw())));
-        assert_eq!(GUARDED.len(), 13, "exercise every GUARDED command above");
+        assert_eq!(GUARDED.len(), 17, "exercise every GUARDED command above");
+    }
+
+    #[test]
+    fn import_flow_end_to_end() {
+        let fast = KdfParams { m_kib: 64, t: 1, p: 1 };
+        // A backup from another vault, made with a different password.
+        let other_dir = tempfile::tempdir().unwrap();
+        let mut other = Vault::create(&other_dir.path().join("vault.enc"), "backup password", fast).unwrap();
+        let entry = otp::parse_uri(URI).unwrap();
+        other.add(&entry, None).unwrap();
+        let backup = other.export_bytes().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(dir.path());
+        let s = || app.state::<AppState>();
+        *s().vault.lock().unwrap() =
+            Some(Vault::create(&dir.path().join("vault.enc"), "correct horse battery", fast).unwrap());
+
+        let token = stage_import_bytes(&s(), backup).unwrap();
+        let err = block_on(import_confirm(s(), token.clone(), "nope".into())).unwrap_err();
+        assert!(err.contains("Wrong password"), "{err}");
+        // Still staged after a wrong password.
+        let summary = block_on(import_confirm(s(), token.clone(), "backup password".into())).unwrap();
+        assert_eq!((summary.added, summary.skipped), (1, 0));
+        assert!(block_on(import_confirm(s(), token, "backup password".into())).is_err(), "used once");
+
+        let token = stage_import_bytes(&s(), b"garbage".to_vec()).unwrap();
+        let err = block_on(import_confirm(s(), token, "backup password".into())).unwrap_err();
+        assert!(err.contains("isn't a lockbox backup"), "{err}");
+        assert_eq!(list_entries(s()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn today_formats_civil_date() {
+        let d = today();
+        assert_eq!(d.len(), 10);
+        assert!(d.starts_with("20"), "{d}");
     }
 
     #[test]

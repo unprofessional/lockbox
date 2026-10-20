@@ -13,11 +13,11 @@ The full plan, scope and milestones are in [BRIEF.md](BRIEF.md).
 | M1 | Skeleton: locked-down Tauri shell, settings store, lock screen | done |
 | M2 | Vault core: Argon2id + AES-256-GCM, create/unlock/lock/change password | done |
 | M3 | Codes: add entries (manual, `otpauth://` paste), TOTP/HOTP generation | done |
-| M4 | UI parity: tile grid, copy with clipboard wipe, settings | in review |
-| M5 | QR image import, encrypted export/import | next |
+| M4 | UI parity: tile grid, copy with clipboard wipe, settings | done |
+| M5 | QR image import, encrypted export/import | in review |
 | M6 | Hardening: lock on sleep/hide, unlock backoff, panic hotkey, screen-capture exclusion | |
 
-Right now you can create a vault and add accounts, either by pasting an `otpauth://` link or by typing the secret. Accounts show as a tile grid with live codes, for both time-based and counter-based accounts. Click a tile to copy its code. You can search, and edit or delete accounts. Settings cover the theme, lock after inactivity, how long copied codes stay on the clipboard, changing the master password, and checking for updates.
+Right now you can create a vault and add accounts from a screenshot of the QR code (drop, paste or pick it), by pasting an `otpauth://` link, or by typing the secret. Accounts show as a tile grid with live codes, for both time-based and counter-based accounts. Click a tile to copy its code. You can search, edit or delete accounts, and export or import encrypted backups. Settings cover the theme, lock after inactivity, how long copied codes stay on the clipboard, changing the master password, backups, and checking for updates.
 
 Shortcuts: ⌘N add, ⌘F search, ⌘, settings, ⌘L lock.
 
@@ -29,7 +29,7 @@ Shortcuts: ⌘N add, ⌘F search, ⌘, settings, ⌘L lock.
 - Shoulder-surfing: codes are hidden until you unlock, and lockbox locks itself after a set time without activity. Locking on sleep and when the window is hidden comes in M6.
 - Clipboard snooping: copied codes are wiped after a timeout, kept out of clipboard-manager history, and never synced to other devices through Universal Clipboard.
 - A compromised webview: no secret crosses IPC; the webview only gets codes for the current 30-second window.
-- Leaked backups: exports are encrypted by default (M5).
+- Leaked backups: backups are always encrypted with your master password; there is no plain-text export.
 - Accidental network exfiltration: there is no networking code to exfiltrate with (see [Security surface](#security-surface)).
 
 **Does not protect against:**
@@ -37,7 +37,7 @@ Shortcuts: ⌘N add, ⌘F search, ⌘, settings, ⌘L lock.
 - Malware running as you while the vault is unlocked. It can read memory or take screenshots; the same is true of Authy, 1Password or any other app.
 - Keyloggers.
 - Being forced to type your password.
-- Forgetting your password. **There is no recovery.** Lose the password and you lose the vault. Keep an encrypted export (M5) as your backup.
+- Forgetting your password. **There is no recovery.** Lose the password and you lose the vault. Keep an encrypted backup (Settings → Backup) somewhere safe.
 
 **Desktop automation agents.** AI agents that you grant Screen Recording and Accessibility permission can take screenshots of your desktop, read on-screen text through macOS accessibility, and click and type. Treat them like a tireless person looking over your shoulder.
 
@@ -159,6 +159,18 @@ On unlock, lockbox refuses unknown versions and algorithms. It bounds-checks the
 
 Saves are atomic: write `vault.enc.tmp`, fsync, rename over `vault.enc`, fsync the directory. The previous file becomes `vault.enc.bak` first.
 
+### Backups
+
+**Settings → Backup → Export backup…** asks for your master password, then opens the standard macOS save dialog. The file (`lockbox-backup-YYYY-MM-DD.lockbox`) uses the same encrypted format as `vault.enc` and opens with the master password you had when you made it. Only you choose where it goes: the save dialog runs from Rust, and the webview never sees a file path.
+
+**Import backup…** reads a backup you pick, asks for the password it was made with, and adds every account that isn't already in your vault (same issuer, account and secret). It never removes or overwrites anything, so importing the same backup twice is harmless. If you've changed your master password since, use the old one for older backups.
+
+There is deliberately no plain-text export.
+
+### Adding from a QR screenshot
+
+On the **QR image** tab of **+ Add**, drop a screenshot, paste one with ⌘V, or choose a file. PNG and JPEG are supported, up to 20 MB and 8000 px per side. The image goes to Rust as raw bytes, where [qr.rs](src-tauri/src/qr.rs) decodes it with `rqrr`. Only the account preview comes back to the webview, never the decoded link.
+
 ### Copying codes
 
 Clicking a tile asks Rust to copy its code (`copy_code`). Counter-based (HOTP) tiles get their next code. The webview never touches the clipboard and has no permission to.
@@ -186,10 +198,12 @@ These are the only commands the webview can call. Each one is declared in [build
 | `get_codes` | no |
 | `hotp_next(id)` | no |
 | `copy_code(id)` | no |
-| `entry_preview_uri(uri)`, `entry_preview_manual(form)` | no |
+| `entry_preview_uri(uri)`, `entry_preview_manual(form)`, `entry_preview_qr(image)` | no |
 | `entry_confirm(token, replace)` | no |
 | `edit_entry(id, issuer, account, tags)` | no |
 | `delete_entry(id)` | no |
+| `export_backup(password)` | no, and it also re-checks the master password |
+| `import_stage(file)`, `import_confirm(token, password)` | no |
 | `app_info` | yes (version and build commit only) |
 | `update_check` | no |
 | `update_install(password)` | no, and it also re-checks the master password |

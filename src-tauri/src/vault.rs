@@ -25,6 +25,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 pub const FORMAT_VERSION: u32 = 1;
 pub const MIN_PASSWORD_CHARS: usize = 8;
+pub const MAX_BACKUP_BYTES: usize = 10 * 1024 * 1024;
 
 const KDF_ALGO: &str = "argon2id";
 const CIPHER_ALGO: &str = "aes-256-gcm";
@@ -208,6 +209,14 @@ impl Vault {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(VaultError::NotFound),
             Err(e) => return Err(e.into()),
         };
+        let mut vault = Self::open_raw(&raw, password)?;
+        vault.path = path.to_path_buf();
+        Ok(vault)
+    }
+
+    /// Decrypts an envelope (a vault file or a backup) held in memory. The
+    /// returned vault has no path; callers set one or only read entries.
+    fn open_raw(raw: &[u8], password: &str) -> Result<Self, VaultError> {
         let env: Envelope =
             serde_json::from_slice(&raw).map_err(|e| VaultError::Corrupt(e.to_string()))?;
         if env.version != FORMAT_VERSION {
@@ -237,7 +246,7 @@ impl Vault {
             .map_err(|e| VaultError::Corrupt(format!("payload: {e}")))?;
 
         Ok(Self {
-            path: path.to_path_buf(),
+            path: PathBuf::new(),
             vault_key,
             kdf,
             salt,
@@ -287,6 +296,18 @@ impl Vault {
     }
 
     fn save(&mut self) -> Result<(), VaultError> {
+        let json = self.envelope_json()?;
+        write_atomic_with_backup(&self.path, &json)?;
+        Ok(())
+    }
+
+    /// An encrypted backup (BRIEF §7): the same envelope as vault.enc, sealed
+    /// with a fresh nonce and opened with the current master password.
+    pub fn export_bytes(&self) -> Result<Vec<u8>, VaultError> {
+        self.envelope_json()
+    }
+
+    fn envelope_json(&self) -> Result<Vec<u8>, VaultError> {
         let plaintext = Zeroizing::new(
             serde_json::to_vec(&self.entries).map_err(|e| VaultError::Corrupt(e.to_string()))?,
         );
@@ -309,10 +330,7 @@ impl Vault {
             created_at: self.created_at,
             updated_at: now(),
         };
-        let json =
-            serde_json::to_vec_pretty(&env).map_err(|e| VaultError::Corrupt(e.to_string()))?;
-        write_atomic_with_backup(&self.path, &json)?;
-        Ok(())
+        serde_json::to_vec_pretty(&env).map_err(|e| VaultError::Corrupt(e.to_string()))
     }
 }
 
@@ -348,6 +366,28 @@ impl Entry {
     /// TOTP code at `now`. HOTP codes come from `Vault::next_hotp`.
     pub fn totp_code(&self, now: u64) -> Result<String, String> {
         otp::code(&self.seed_b32, self.algorithm, self.digits, Kind::Totp, self.period, now)
+    }
+}
+
+/// Entries from a backup file, decrypted with the password it was made with.
+pub fn read_backup(raw: &[u8], password: &str) -> Result<Vec<Entry>, VaultError> {
+    if raw.len() > MAX_BACKUP_BYTES {
+        return Err(VaultError::Corrupt("file is too large to be a lockbox backup".into()));
+    }
+    Ok(std::mem::take(&mut Vault::open_raw(raw, password)?.entries))
+}
+
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ImportSummary {
+    pub added: usize,
+    pub skipped: usize,
+}
+
+impl Entry {
+    fn same_account(&self, other: &Entry) -> bool {
+        self.issuer.eq_ignore_ascii_case(&other.issuer)
+            && self.account.eq_ignore_ascii_case(&other.account)
+            && self.seed_b32 == other.seed_b32
     }
 }
 
@@ -447,6 +487,25 @@ impl Vault {
             Ok(())
         })?;
         Ok(out)
+    }
+
+    /// Adds every backup entry not already in the vault (same issuer, account
+    /// and seed), with fresh ids. Never removes or overwrites anything.
+    pub fn import(&mut self, incoming: Vec<Entry>) -> Result<ImportSummary, VaultError> {
+        let mut summary = ImportSummary::default();
+        self.mutate(|entries| {
+            for mut e in incoming {
+                if entries.iter().any(|x| x.same_account(&e)) {
+                    summary.skipped += 1;
+                    continue;
+                }
+                e.id = new_id();
+                entries.push(e);
+                summary.added += 1;
+            }
+            Ok(())
+        })?;
+        Ok(summary)
     }
 
     /// Applies `f` and saves; if either fails, the in-memory entries are put
@@ -979,6 +1038,69 @@ mod tests {
         let id = v.add(&new_entry("Acme", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"), None).unwrap();
         // RFC 6238 SHA1 t=59 → 94287082; 6-digit form 287082.
         assert_eq!(v.entry(&id).unwrap().totp_code(59).unwrap(), "287082");
+    }
+
+    #[test]
+    fn export_then_import_into_a_fresh_vault_is_identical() {
+        let (_d, path) = setup();
+        let mut v = Vault::create(&path, PW, FAST).unwrap();
+        v.add(&new_entry("Acme", "JBSWY3DPEHPK3PXP"), None).unwrap();
+        let mut h = new_entry("Beta", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+        h.kind = Kind::Hotp;
+        h.counter = Some(7);
+        v.add(&h, None).unwrap();
+        let backup = v.export_bytes().unwrap();
+        let raw = String::from_utf8(backup.clone()).unwrap();
+        assert!(!raw.contains("JBSWY3DP") && !raw.contains("Acme"), "backup is encrypted");
+
+        // "Lose" the vault: a brand-new one with a different password.
+        let (_d2, path2) = setup();
+        let mut fresh = Vault::create(&path2, "another password", FAST).unwrap();
+        let entries = read_backup(&backup, PW).unwrap();
+        let summary = fresh.import(entries).unwrap();
+        assert_eq!(summary, ImportSummary { added: 2, skipped: 0 });
+        drop(fresh);
+
+        let fresh = Vault::unlock(&path2, "another password").unwrap();
+        let key = |e: &Entry| (e.issuer.clone(), e.account.clone(), e.seed_b32.clone(), e.kind == Kind::Hotp, e.counter);
+        let mut a: Vec<_> = v.entries().iter().map(key).collect();
+        let mut b: Vec<_> = fresh.entries().iter().map(key).collect();
+        a.sort();
+        b.sort();
+        assert_eq!(a, b, "same accounts, settings and HOTP counters");
+    }
+
+    #[test]
+    fn import_skips_accounts_already_present() {
+        let (_d, path) = setup();
+        let mut v = Vault::create(&path, PW, FAST).unwrap();
+        v.add(&new_entry("Acme", "JBSWY3DPEHPK3PXP"), None).unwrap();
+        let backup = v.export_bytes().unwrap();
+        v.add(&new_entry("Beta", "GEZDGNBVGY3TQOJQ"), None).unwrap();
+
+        let summary = v.import(read_backup(&backup, PW).unwrap()).unwrap();
+        assert_eq!(summary, ImportSummary { added: 0, skipped: 1 });
+        assert_eq!(v.entries().len(), 2);
+    }
+
+    #[test]
+    fn backup_needs_the_password_it_was_made_with() {
+        let (_d, path) = setup();
+        let mut v = Vault::create(&path, PW, FAST).unwrap();
+        let old_backup = v.export_bytes().unwrap();
+        v.change_password_with(PW, "a brand new passphrase", FAST).unwrap();
+        assert!(matches!(
+            read_backup(&old_backup, "a brand new passphrase"),
+            Err(VaultError::WrongPassword)
+        ));
+        assert!(read_backup(&old_backup, PW).is_ok());
+    }
+
+    #[test]
+    fn bad_backups_are_refused() {
+        assert!(matches!(read_backup(b"not a backup", PW), Err(VaultError::Corrupt(_))));
+        let huge = vec![b' '; MAX_BACKUP_BYTES + 1];
+        assert!(matches!(read_backup(&huge, PW), Err(VaultError::Corrupt(_))));
     }
 
     #[test]
